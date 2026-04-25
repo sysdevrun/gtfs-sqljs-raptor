@@ -21,22 +21,32 @@ import type {
   PlanInput,
   PlanResult,
   NamedStopGroup,
+  ProgressCallback,
 } from './api.js';
 
-// WASM is shipped statically from website/public/sql-wasm.wasm. Avoiding the
-// `?url` Vite asset import here keeps the worker module easier for esbuild's
-// pre-bundler to scan.
-const sqlWasmUrl = '/sql-wasm.wasm';
+// WASM is shipped statically from website/public/sql-wasm.wasm. The main
+// thread computes the correct absolute URL (using Vite's BASE_URL resolved
+// against window.location) and passes it into each load call — the worker
+// itself can't reliably derive the deployment root because `self.location`
+// points into the assets/ chunk directory.
 
 let gtfs: GtfsSqlJs | null = null;
 let raptor: RaptorAlgorithm | null = null;
 
 async function buildAndIndex(
   options: BuildRaptorInputsOptions,
+  onProgress: ProgressCallback,
+  phase: 'build-raptor' | 'rebuild',
 ): Promise<{ buildMs: number; tripCount: number }> {
   if (!gtfs) throw new Error('GTFS not loaded');
   const t0 = performance.now();
+  onProgress({ phase, percent: null, message: 'Reading trips and stop_times…' });
   const { trips, transfers, interchange } = await buildRaptorInputs(gtfs, options);
+  onProgress({
+    phase,
+    percent: null,
+    message: `Indexing ${trips.length.toLocaleString()} trips into raptor routes…`,
+  });
   raptor = RaptorAlgorithmFactory.create(trips, transfers, interchange);
   return { buildMs: performance.now() - t0, tripCount: trips.length };
 }
@@ -81,8 +91,13 @@ async function gatherFeedStats(): Promise<{
   };
 }
 
-async function loadCommon(loadMs: number, options: BuildRaptorInputsOptions): Promise<LoadResult> {
-  const { buildMs, tripCount } = await buildAndIndex(options);
+async function loadCommon(
+  loadMs: number,
+  options: BuildRaptorInputsOptions,
+  onProgress: ProgressCallback,
+): Promise<LoadResult> {
+  const { buildMs, tripCount } = await buildAndIndex(options, onProgress, 'build-raptor');
+  onProgress({ phase: 'gather-stats', percent: null, message: 'Counting routes and stops…' });
   const stats = await gatherFeedStats();
   return {
     loadMs,
@@ -96,26 +111,44 @@ async function loadCommon(loadMs: number, options: BuildRaptorInputsOptions): Pr
 }
 
 const api: WorkerApi = {
-  async loadFromUrl(url, options) {
+  async loadFromUrl(url, options, wasmUrl, onProgress) {
     const t0 = performance.now();
-    const adapter = await createSqlJsAdapter({ locateFile: () => sqlWasmUrl });
+    const adapter = await createSqlJsAdapter({ locateFile: () => wasmUrl });
     if (gtfs) await gtfs.close();
-    gtfs = await GtfsSqlJs.fromZip(url, { adapter });
-    return loadCommon(performance.now() - t0, options);
+    gtfs = await GtfsSqlJs.fromZip(url, {
+      adapter,
+      onProgress: (p) =>
+        onProgress({
+          phase: 'load',
+          percent: p.percentComplete,
+          message: p.message ?? gtfsPhaseLabel(p.phase),
+          currentFile: p.currentFile ?? undefined,
+        }),
+    });
+    return loadCommon(performance.now() - t0, options, onProgress);
   },
 
-  async loadFromBuffer(buffer, options) {
+  async loadFromBuffer(buffer, options, wasmUrl, onProgress) {
     const t0 = performance.now();
-    const adapter = await createSqlJsAdapter({ locateFile: () => sqlWasmUrl });
+    const adapter = await createSqlJsAdapter({ locateFile: () => wasmUrl });
     if (gtfs) await gtfs.close();
-    gtfs = await GtfsSqlJs.fromZipData(new Uint8Array(buffer), { adapter });
-    return loadCommon(performance.now() - t0, options);
+    gtfs = await GtfsSqlJs.fromZipData(new Uint8Array(buffer), {
+      adapter,
+      onProgress: (p) =>
+        onProgress({
+          phase: 'load',
+          percent: p.percentComplete,
+          message: p.message ?? gtfsPhaseLabel(p.phase),
+          currentFile: p.currentFile ?? undefined,
+        }),
+    });
+    return loadCommon(performance.now() - t0, options, onProgress);
   },
 
-  async rebuild(options) {
+  async rebuild(options, onProgress) {
     if (!gtfs) throw new Error('GTFS not loaded');
     const t0 = performance.now();
-    await buildAndIndex(options);
+    await buildAndIndex(options, onProgress, 'rebuild');
     return { buildMs: performance.now() - t0 };
   },
 
@@ -171,6 +204,23 @@ const api: WorkerApi = {
     raptor = null;
   },
 };
+
+function gtfsPhaseLabel(phase: string): string {
+  switch (phase) {
+    case 'checking_cache': return 'Checking cache…';
+    case 'loading_from_cache': return 'Loading from cache…';
+    case 'downloading': return 'Downloading GTFS feed…';
+    case 'extracting': return 'Extracting ZIP archive…';
+    case 'creating_schema': return 'Creating SQLite schema…';
+    case 'inserting_data': return 'Inserting rows into SQLite…';
+    case 'creating_indexes': return 'Creating SQL indexes…';
+    case 'analyzing': return 'Analyzing tables…';
+    case 'loading_realtime': return 'Loading GTFS-RT feed…';
+    case 'saving_cache': return 'Saving cache…';
+    case 'complete': return 'Load complete';
+    default: return phase;
+  }
+}
 
 // One-shot handshake — the App waits for this before letting Comlink wrap us.
 // Without it, a module-eval failure in the worker leaves Comlink calls

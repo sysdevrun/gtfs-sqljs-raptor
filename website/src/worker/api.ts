@@ -37,10 +37,35 @@ export interface NamedStopGroup {
   representative: Stop;
 }
 
+/**
+ * Streaming progress reported during load + raptor pre-compute. `percent` is
+ * 0–100 for `load` (driven by gtfs-sqljs's onProgress); `null` for the other
+ * phases since we don't have a meaningful denominator there.
+ */
+export interface PlannerProgress {
+  phase: 'load' | 'build-raptor' | 'gather-stats' | 'rebuild';
+  percent: number | null;
+  message: string;
+  currentFile?: string | null;
+}
+
+export type ProgressCallback = (p: PlannerProgress) => void;
+
 export interface WorkerApi {
-  loadFromUrl(url: string, options: BuildRaptorInputsOptions): Promise<LoadResult>;
-  loadFromBuffer(buffer: ArrayBuffer, options: BuildRaptorInputsOptions): Promise<LoadResult>;
-  rebuild(options: BuildRaptorInputsOptions): Promise<{ buildMs: number }>;
+  /** `wasmUrl` is the absolute URL to sql-wasm.wasm, resolved from the page's base. */
+  loadFromUrl(
+    url: string,
+    options: BuildRaptorInputsOptions,
+    wasmUrl: string,
+    onProgress: ProgressCallback,
+  ): Promise<LoadResult>;
+  loadFromBuffer(
+    buffer: ArrayBuffer,
+    options: BuildRaptorInputsOptions,
+    wasmUrl: string,
+    onProgress: ProgressCallback,
+  ): Promise<LoadResult>;
+  rebuild(options: BuildRaptorInputsOptions, onProgress: ProgressCallback): Promise<{ buildMs: number }>;
   searchStopGroups(query: string, limit?: number): Promise<NamedStopGroup[]>;
   plan(input: PlanInput): Promise<PlanResult>;
   close(): Promise<void>;

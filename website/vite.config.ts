@@ -8,6 +8,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const stubGtfsStream = resolve(here, 'src/empty.ts');
 
 export default defineConfig({
+  // Relative asset paths so the built site can be served from any sub-path
+  // (e.g. https://docs.sys-dev-run.fr/raptor/).
+  base: './',
   plugins: [react()],
   resolve: {
     alias: {

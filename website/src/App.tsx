@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as Comlink from 'comlink';
 import type { HydratedJourney } from 'gtfs-sqljs-raptor';
-import type { LoadResult, NamedStopGroup, WorkerApi } from './worker/api';
+import type { LoadResult, NamedStopGroup, PlannerProgress, WorkerApi } from './worker/api';
 import { GtfsSelectorPanel } from './components/GtfsSelectorPanel';
 import { StopAutocomplete } from './components/StopAutocomplete';
 import { SettingsPanel, type PlannerSettings } from './components/SettingsPanel';
 import { TimingsBar, type Timings } from './components/TimingsBar';
 import { JourneyCard } from './components/JourneyCard';
+import { ProgressBar } from './components/ProgressBar';
 import { getProxyUrl } from './util/proxy';
 import {
   fmtHHMMInput,
@@ -21,7 +22,9 @@ const DEFAULT_SETTINGS: PlannerSettings = {
   walkingSpeedMps: 1.2,
   bridgeParentStations: false,
   defaultInterchangeSeconds: 0,
-  rangeMinutes: 0,
+  // Default 60 minutes so the planner uses RangeQuery and returns multiple
+  // departure options rather than a single optimum.
+  rangeMinutes: 60,
 };
 
 export function App() {
@@ -30,6 +33,8 @@ export function App() {
   const [loadResult, setLoadResult] = useState<LoadResult | null>(null);
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'planning' | 'rebuilding'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [showSelector, setShowSelector] = useState(true);
+  const [progress, setProgress] = useState<PlannerProgress | null>(null);
 
   const [settings, setSettings] = useState<PlannerSettings>(DEFAULT_SETTINGS);
   const [origin, setOrigin] = useState<NamedStopGroup | null>(null);
@@ -88,6 +93,14 @@ export function App() {
     [settings],
   );
 
+  // Absolute URL for sql-wasm.wasm, computed against the page's deployment
+  // root so it works under any base path (`/` in dev, `/raptor/` in prod).
+  // BASE_URL is set from Vite's `base` config and ends with `/`.
+  const wasmUrl = useMemo(
+    () => new URL(`${import.meta.env.BASE_URL}sql-wasm.wasm`, window.location.href).href,
+    [],
+  );
+
   const handleLoad = async (
     selection:
       | { kind: 'file'; buffer: ArrayBuffer; name: string }
@@ -103,7 +116,9 @@ export function App() {
     setOrigin(null);
     setDestination(null);
     setLoadResult(null);
+    setProgress({ phase: 'load', percent: 0, message: 'Starting…' });
     setPhase('loading');
+    const onProgress = Comlink.proxy((p: PlannerProgress) => setProgress(p));
     try {
       let result: LoadResult;
       if (selection.kind === 'file') {
@@ -111,19 +126,24 @@ export function App() {
         result = await workerRef.current.api.loadFromBuffer(
           Comlink.transfer(selection.buffer, [selection.buffer]),
           buildOptions,
+          wasmUrl,
+          onProgress,
         );
       } else {
         const url = selection.useProxy ? getProxyUrl(selection.url) : selection.url;
         setFeedTitle(selection.title);
-        result = await workerRef.current.api.loadFromUrl(url, buildOptions);
+        result = await workerRef.current.api.loadFromUrl(url, buildOptions, wasmUrl, onProgress);
       }
       setLoadResult(result);
       setTimings({ loadMs: result.loadMs, buildMs: result.buildMs });
       setPhase('ready');
+      setShowSelector(false);
+      setProgress(null);
     } catch (e) {
       console.error(e);
       setError(e instanceof Error ? e.message : String(e));
       setPhase('idle');
+      setProgress(null);
     }
   };
 
@@ -131,13 +151,17 @@ export function App() {
     if (!workerRef.current || phase === 'rebuilding') return;
     setPhase('rebuilding');
     setError(null);
+    setProgress({ phase: 'rebuild', percent: null, message: 'Re-building raptor index…' });
+    const onProgress = Comlink.proxy((p: PlannerProgress) => setProgress(p));
     try {
-      const r = await workerRef.current.api.rebuild(buildOptions);
+      const r = await workerRef.current.api.rebuild(buildOptions, onProgress);
       setTimings((t) => ({ ...t, buildMs: r.buildMs }));
       setPhase('ready');
+      setProgress(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setPhase('ready');
+      setProgress(null);
     }
   };
 
@@ -185,22 +209,37 @@ export function App() {
         </div>
         {feedTitle && (
           <div className="feed-pill" title={feedTitle}>
-            <span className="feed-pill__label">Feed</span>
-            <span className="feed-pill__value">{feedTitle}</span>
-            {loadResult && (
-              <span className="feed-pill__meta">
-                {loadResult.tripCount.toLocaleString()} trips · {loadResult.routeCount} routes ·{' '}
-                {loadResult.stopCount.toLocaleString()} stops
-              </span>
-            )}
+            <div className="feed-pill__text">
+              <span className="feed-pill__label">Feed</span>
+              <span className="feed-pill__value">{feedTitle}</span>
+              {loadResult && (
+                <span className="feed-pill__meta">
+                  {loadResult.tripCount.toLocaleString()} trips · {loadResult.routeCount} routes ·{' '}
+                  {loadResult.stopCount.toLocaleString()} stops
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="feed-pill__change"
+              onClick={() => {
+                setShowSelector(true);
+                setError(null);
+              }}
+              disabled={phase === 'loading'}
+            >
+              Change feed
+            </button>
           </div>
         )}
       </header>
 
-      <GtfsSelectorPanel onSelected={handleLoad} disabled={phase === 'loading'} />
+      {showSelector && (
+        <GtfsSelectorPanel onSelected={handleLoad} disabled={phase === 'loading'} />
+      )}
 
-      {phase === 'loading' && (
-        <div className="status status--loading">Loading & pre-computing — this can take a few seconds.</div>
+      {(phase === 'loading' || phase === 'rebuilding') && progress && (
+        <ProgressBar progress={progress} />
       )}
       {error && <div className="status status--error">Error: {error}</div>}
 

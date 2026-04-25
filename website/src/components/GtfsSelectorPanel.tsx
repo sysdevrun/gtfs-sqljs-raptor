@@ -16,7 +16,10 @@ interface Props {
 export function GtfsSelectorPanel({ onSelected, disabled }: Props) {
   const [useProxy, setUseProxy] = useState(true);
 
-  const tabs = useMemo(() => [fileTab, urlTab, transportDataGouvFr, mobilityDataCsv], []);
+  const tabs = useMemo(
+    () => [transportDataGouvFr, mobilityDataCsv, urlTab, fileTab],
+    [],
+  );
 
   // react-gtfs-selector reports a selection through this `onSelect` callback
   // for every tab: file drop → result.type === 'file', URL form submit and
