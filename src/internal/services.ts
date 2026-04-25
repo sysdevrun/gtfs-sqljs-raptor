@@ -1,5 +1,4 @@
-import { Service } from 'raptor-journey-planner';
-import type { DateIndex, DayOfWeek, ServiceID } from 'raptor-journey-planner';
+import { Service, type DateIndex, type DayOfWeek, type ServiceID } from 'raptor-journey-planner';
 import type { GtfsDatabase } from 'gtfs-sqljs';
 import { iterateRows } from './sqlHelpers.js';
 

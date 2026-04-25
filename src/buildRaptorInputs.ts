@@ -1,12 +1,15 @@
 import type { GtfsSqlJs } from 'gtfs-sqljs';
-import { TimeParser } from 'raptor-journey-planner';
-import type {
-  Interchange,
-  Service,
-  StopTime,
-  Transfer,
-  TransfersByOrigin,
-  Trip,
+// raptor-journey-planner@2.2.3 is shipped as CommonJS. Importing deep `.js`
+// subpaths breaks in ESM workers because they use `require`. Only the package
+// barrel works after Vite pre-bundles it through esbuild's CJS→ESM transform.
+import {
+  TimeParser,
+  type Service,
+  type StopTime,
+  type Trip,
+  type Interchange,
+  type Transfer,
+  type TransfersByOrigin,
 } from 'raptor-journey-planner';
 import { buildServices } from './internal/services.js';
 import { withDefaultInterchange } from './internal/interchangeProxy.js';
