@@ -1,0 +1,50 @@
+{
+  "name": "gtfs-sqljs-raptor",
+  "version": "0.1.0",
+  "description": "Bridge a gtfs-sqljs instance to raptor-journey-planner: build raptor inputs from SQLite-backed GTFS and hydrate the resulting Journey[] with stop and route metadata. Works in browser and Node.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:e2e": "vitest run test/e2e",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "gtfs",
+    "raptor",
+    "journey-planner",
+    "transit",
+    "sql.js",
+    "browser"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "gtfs-sqljs": ">=0.6 <1",
+    "raptor-journey-planner": ">=2.2.3 <3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "gtfs-sqljs": "^0.7.0",
+    "raptor-journey-planner": "2.2.3",
+    "sql.js": "^1.13.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
