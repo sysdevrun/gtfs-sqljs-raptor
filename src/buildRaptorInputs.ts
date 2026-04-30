@@ -45,6 +45,15 @@ export interface BuildRaptorInputsOptions {
   sameNameMaxMeters?: number;
   /** Walking speed used to convert geo distance into seconds. Default: 1.2 m/s. */
   walkingSpeedMps?: number;
+  /**
+   * Walking speed used to *price* `transfers.txt` rows whose `min_transfer_time`
+   * is empty/null. The GTFS spec leaves the time unspecified for those rows, but
+   * raptor needs a number — defaulting it to 0 lets the planner chain many
+   * transfer edges into long free walks. Pricing them by haversine distance
+   * over a slow speed (default 0.8 m/s) approximates real-world non-straight
+   * routing. Set to `null` to keep the legacy behaviour (treat as 0).
+   */
+  transferFallbackSpeedMps?: number | null;
   /** Default interchange (in seconds) for stops not present in `transfers.txt`. */
   defaultInterchangeSeconds?: number;
 }
@@ -58,6 +67,7 @@ export async function buildRaptorInputs(
     bridgeSameNameStops = false,
     sameNameMaxMeters = 250,
     walkingSpeedMps = 1.2,
+    transferFallbackSpeedMps = 0.8,
     defaultInterchangeSeconds = 0,
   } = options;
   const db = gtfs.getDatabase();
@@ -65,7 +75,7 @@ export async function buildRaptorInputs(
 
   const services = await buildServices(db);
   const trips = await buildTrips(db, services, timeParser);
-  const { transfers, interchangeBase } = await buildTransfers(db);
+  const { transfers, interchangeBase } = await buildTransfers(db, transferFallbackSpeedMps);
 
   if (bridgeParentStations) {
     await addParentStationBridges(db, transfers);
@@ -124,16 +134,35 @@ async function buildTrips(
 
 async function buildTransfers(
   db: ReturnType<GtfsSqlJs['getDatabase']>,
+  fallbackSpeedMps: number | null,
 ): Promise<{ transfers: TransfersByOrigin; interchangeBase: Record<string, number> }> {
   const transfers: TransfersByOrigin = {};
   const interchangeBase: Record<string, number> = {};
+
+  const coords = fallbackSpeedMps == null ? null : await loadStopCoords(db);
 
   // transfers.txt is optional; tolerate missing table.
   try {
     for await (const row of iterateRows(db, 'SELECT * FROM transfers')) {
       const from = String(row.from_stop_id);
       const to = String(row.to_stop_id);
-      const seconds = row.min_transfer_time == null ? 0 : Number(row.min_transfer_time);
+      const raw = row.min_transfer_time;
+      const hasExplicit = raw != null && String(raw).trim() !== '';
+      let seconds: number;
+      if (hasExplicit) {
+        seconds = Number(raw);
+      } else if (fallbackSpeedMps != null && coords && from !== to) {
+        const a = coords.get(from);
+        const b = coords.get(to);
+        if (a && b) {
+          const meters = haversineMeters(a.lat, a.lon, b.lat, b.lon);
+          seconds = Math.max(1, Math.round(meters / fallbackSpeedMps));
+        } else {
+          seconds = 0;
+        }
+      } else {
+        seconds = 0;
+      }
       if (from === to) {
         interchangeBase[from] = seconds;
       } else {
@@ -152,6 +181,23 @@ async function buildTransfers(
   }
 
   return { transfers, interchangeBase };
+}
+
+async function loadStopCoords(
+  db: ReturnType<GtfsSqlJs['getDatabase']>,
+): Promise<Map<string, { lat: number; lon: number }>> {
+  const out = new Map<string, { lat: number; lon: number }>();
+  for await (const row of iterateRows(
+    db,
+    'SELECT stop_id, stop_lat, stop_lon FROM stops WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL',
+  )) {
+    const lat = Number(row.stop_lat);
+    const lon = Number(row.stop_lon);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      out.set(String(row.stop_id), { lat, lon });
+    }
+  }
+  return out;
 }
 
 async function addParentStationBridges(
