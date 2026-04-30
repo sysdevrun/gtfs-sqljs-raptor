@@ -81,6 +81,7 @@ Options:
 | `bridgeSameNameStops` | `false` | Adds Transfer rows between every pair of stops sharing the same `stop_name` and within `sameNameMaxMeters`. Many feeds split a logical station into per-route platforms without using `parent_station`; without bridging, raptor cannot change routes there. |
 | `sameNameMaxMeters` | `250` | Distance ceiling for `bridgeSameNameStops`. |
 | `walkingSpeedMps` | `1.2` | Walking speed used to convert geo distance to seconds. |
+| `transferFallbackSpeedMps` | `0.8` | Walking speed used to *price* `transfers.txt` rows whose `min_transfer_time` is empty/`NULL`. The GTFS spec leaves the time unspecified for those rows; raptor needs a number. Pricing them by haversine distance ÷ this speed approximates real-world non-straight walking and prevents the planner from chaining many "free" transfer edges into long zero-second walks. Set to `null` to fall back to 0 seconds (legacy behaviour). |
 | `bridgeParentStations` | `false` | Adds zero-duration transfers between `parent_station` ↔ children. **Largely cosmetic** — see the gotcha below. |
 | `defaultInterchangeSeconds` | `0` | Interchange time for stops not in `transfers.txt`. |
 
