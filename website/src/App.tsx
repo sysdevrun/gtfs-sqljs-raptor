@@ -135,7 +135,7 @@ export function App() {
         result = await workerRef.current.api.loadFromUrl(url, buildOptions, wasmUrl, onProgress);
       }
       setLoadResult(result);
-      setTimings({ loadMs: result.loadMs, buildMs: result.buildMs });
+      setTimings({ loadMs: result.loadMs, inputsMs: result.inputsMs, indexMs: result.indexMs });
       setPhase('ready');
       setShowSelector(false);
       setProgress(null);
@@ -155,7 +155,7 @@ export function App() {
     const onProgress = Comlink.proxy((p: PlannerProgress) => setProgress(p));
     try {
       const r = await workerRef.current.api.rebuild(buildOptions, onProgress);
-      setTimings((t) => ({ ...t, buildMs: r.buildMs }));
+      setTimings((t) => ({ ...t, inputsMs: r.inputsMs, indexMs: r.indexMs }));
       setPhase('ready');
       setProgress(null);
     } catch (e) {
@@ -180,7 +180,8 @@ export function App() {
       });
       setTimings((t) => ({
         loadMs: t.loadMs,
-        buildMs: t.buildMs,
+        inputsMs: t.inputsMs,
+        indexMs: t.indexMs,
         computeMs: result.computeMs,
         hydrateMs: result.hydrateMs,
         rawCount: result.rawCount,

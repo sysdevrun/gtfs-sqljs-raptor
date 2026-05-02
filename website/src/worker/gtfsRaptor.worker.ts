@@ -37,18 +37,21 @@ async function buildAndIndex(
   options: BuildRaptorInputsOptions,
   onProgress: ProgressCallback,
   phase: 'build-raptor' | 'rebuild',
-): Promise<{ buildMs: number; tripCount: number }> {
+): Promise<{ inputsMs: number; indexMs: number; tripCount: number }> {
   if (!gtfs) throw new Error('GTFS not loaded');
   const t0 = performance.now();
   onProgress({ phase, percent: null, message: 'Reading trips and stop_times…' });
   const { trips, transfers, interchange } = await buildRaptorInputs(gtfs, options);
+  const inputsMs = performance.now() - t0;
   onProgress({
     phase,
     percent: null,
     message: `Indexing ${trips.length.toLocaleString()} trips into raptor routes…`,
   });
+  const t1 = performance.now();
   raptor = RaptorAlgorithmFactory.create(trips, transfers, interchange);
-  return { buildMs: performance.now() - t0, tripCount: trips.length };
+  const indexMs = performance.now() - t1;
+  return { inputsMs, indexMs, tripCount: trips.length };
 }
 
 async function gatherFeedStats(): Promise<{
@@ -96,12 +99,13 @@ async function loadCommon(
   options: BuildRaptorInputsOptions,
   onProgress: ProgressCallback,
 ): Promise<LoadResult> {
-  const { buildMs, tripCount } = await buildAndIndex(options, onProgress, 'build-raptor');
+  const { inputsMs, indexMs, tripCount } = await buildAndIndex(options, onProgress, 'build-raptor');
   onProgress({ phase: 'gather-stats', percent: null, message: 'Counting routes and stops…' });
   const stats = await gatherFeedStats();
   return {
     loadMs,
-    buildMs,
+    inputsMs,
+    indexMs,
     tripCount,
     stopCount: stats.stopCount,
     routeCount: stats.routeCount,
@@ -147,9 +151,8 @@ const api: WorkerApi = {
 
   async rebuild(options, onProgress) {
     if (!gtfs) throw new Error('GTFS not loaded');
-    const t0 = performance.now();
-    await buildAndIndex(options, onProgress, 'rebuild');
-    return { buildMs: performance.now() - t0 };
+    const { inputsMs, indexMs } = await buildAndIndex(options, onProgress, 'rebuild');
+    return { inputsMs, indexMs };
   },
 
   async searchStopGroups(query, limit = 12) {
