@@ -2,7 +2,8 @@ import { fmtMs } from '../util/format';
 
 export interface Timings {
   loadMs?: number;
-  buildMs?: number;
+  inputsMs?: number;
+  indexMs?: number;
   computeMs?: number;
   hydrateMs?: number;
   rawCount?: number;
@@ -11,7 +12,8 @@ export interface Timings {
 export function TimingsBar({ timings }: { timings: Timings }) {
   const items: Array<[string, string, string]> = [];
   if (timings.loadMs !== undefined) items.push(['Load + parse', fmtMs(timings.loadMs), 'GTFS zip → SQLite']);
-  if (timings.buildMs !== undefined) items.push(['Pre-compute', fmtMs(timings.buildMs), 'raptor index']);
+  if (timings.inputsMs !== undefined) items.push(['Read inputs', fmtMs(timings.inputsMs), 'buildRaptorInputs']);
+  if (timings.indexMs !== undefined) items.push(['Build index', fmtMs(timings.indexMs), 'RaptorAlgorithmFactory.create']);
   if (timings.computeMs !== undefined) items.push(['Compute', fmtMs(timings.computeMs), 'raptor scan']);
   if (timings.hydrateMs !== undefined) items.push(['Hydrate', fmtMs(timings.hydrateMs), 'stop + route join']);
   if (items.length === 0) return null;

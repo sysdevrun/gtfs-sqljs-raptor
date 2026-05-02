@@ -3,7 +3,8 @@ import type { HydratedJourney, BuildRaptorInputsOptions } from 'gtfs-sqljs-rapto
 
 export interface LoadResult {
   loadMs: number;
-  buildMs: number;
+  inputsMs: number;
+  indexMs: number;
   tripCount: number;
   stopCount: number;
   routeCount: number;
@@ -65,7 +66,10 @@ export interface WorkerApi {
     wasmUrl: string,
     onProgress: ProgressCallback,
   ): Promise<LoadResult>;
-  rebuild(options: BuildRaptorInputsOptions, onProgress: ProgressCallback): Promise<{ buildMs: number }>;
+  rebuild(
+    options: BuildRaptorInputsOptions,
+    onProgress: ProgressCallback,
+  ): Promise<{ inputsMs: number; indexMs: number }>;
   searchStopGroups(query: string, limit?: number): Promise<NamedStopGroup[]>;
   plan(input: PlanInput): Promise<PlanResult>;
   close(): Promise<void>;
