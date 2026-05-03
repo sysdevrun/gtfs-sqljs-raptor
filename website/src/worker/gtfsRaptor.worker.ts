@@ -9,17 +9,26 @@ import {
   JourneyFactory,
   MultipleCriteriaFilter,
   type RaptorAlgorithm,
+  type Journey as RawJourney,
 } from 'raptor-journey-planner';
 import {
   buildRaptorInputs,
   hydrateJourneys,
+  findNearbyStops,
+  loadStopLocations,
+  planForPois,
   type BuildRaptorInputsOptions,
+  type RaptorInputs,
+  type StopLocation,
 } from 'gtfs-sqljs-raptor';
 import type {
   WorkerApi,
   LoadResult,
   PlanInput,
   PlanResult,
+  PoiPlanInput,
+  PoiPlanResult,
+  PoiHydratedJourney,
   NamedStopGroup,
   ProgressCallback,
 } from './api.js';
@@ -32,6 +41,8 @@ import type {
 
 let gtfs: GtfsSqlJs | null = null;
 let raptor: RaptorAlgorithm | null = null;
+let inputs: RaptorInputs | null = null;
+let stops: StopLocation[] | null = null;
 
 async function buildAndIndex(
   options: BuildRaptorInputsOptions,
@@ -41,17 +52,17 @@ async function buildAndIndex(
   if (!gtfs) throw new Error('GTFS not loaded');
   const t0 = performance.now();
   onProgress({ phase, percent: null, message: 'Reading trips and stop_times…' });
-  const { trips, transfers, interchange } = await buildRaptorInputs(gtfs, options);
+  inputs = await buildRaptorInputs(gtfs, options);
   const inputsMs = performance.now() - t0;
   onProgress({
     phase,
     percent: null,
-    message: `Indexing ${trips.length.toLocaleString()} trips into raptor routes…`,
+    message: `Indexing ${inputs.trips.length.toLocaleString()} trips into raptor routes…`,
   });
   const t1 = performance.now();
-  raptor = RaptorAlgorithmFactory.create(trips, transfers, interchange);
+  raptor = RaptorAlgorithmFactory.create(inputs.trips, inputs.transfers, inputs.interchange);
   const indexMs = performance.now() - t1;
-  return { inputsMs, indexMs, tripCount: trips.length };
+  return { inputsMs, indexMs, tripCount: inputs.trips.length };
 }
 
 async function gatherFeedStats(): Promise<{
@@ -59,6 +70,7 @@ async function gatherFeedStats(): Promise<{
   routeCount: number;
   serviceIdsRunningSomeDay: number;
   feedTimezone: string | null;
+  feedBounds: LoadResult['feedBounds'];
 }> {
   if (!gtfs) throw new Error('GTFS not loaded');
   const db = gtfs.getDatabase();
@@ -86,11 +98,26 @@ async function gatherFeedStats(): Promise<{
     : null;
   await tzStmt.free();
 
+  // Cache stop locations for POI lookups + compute bounding box at the same time.
+  stops = await loadStopLocations(gtfs);
+  let bounds: LoadResult['feedBounds'] = null;
+  if (stops.length > 0) {
+    let minLat = Infinity, minLon = Infinity, maxLat = -Infinity, maxLon = -Infinity;
+    for (const s of stops) {
+      if (s.lat < minLat) minLat = s.lat;
+      if (s.lon < minLon) minLon = s.lon;
+      if (s.lat > maxLat) maxLat = s.lat;
+      if (s.lon > maxLon) maxLon = s.lon;
+    }
+    bounds = { minLat, minLon, maxLat, maxLon };
+  }
+
   return {
     stopCount,
     routeCount,
     serviceIdsRunningSomeDay: serviceCount,
     feedTimezone: tzRow?.agency_timezone ?? null,
+    feedBounds: bounds,
   };
 }
 
@@ -111,7 +138,74 @@ async function loadCommon(
     routeCount: stats.routeCount,
     serviceIdsRunningSomeDay: stats.serviceIdsRunningSomeDay,
     feedTimezone: stats.feedTimezone,
+    feedBounds: stats.feedBounds,
   };
+}
+
+interface TripShape {
+  tripId: string;
+  shapeId: string | null;
+}
+
+/**
+ * For a set of trip ids, fetch each trip's shape_id and then load all referenced
+ * shape points in two batched queries. Returns `[lon, lat]` arrays keyed by trip id;
+ * trips without a shape get an empty array (callers can fall back to stop coords).
+ */
+async function fetchShapesByTripId(tripIds: string[]): Promise<Record<string, [number, number][]>> {
+  if (!gtfs || tripIds.length === 0) return {};
+  const db = gtfs.getDatabase();
+
+  const placeholders = tripIds.map(() => '?').join(',');
+  const tripShapes: TripShape[] = [];
+  const tripStmt = await db.prepare(
+    `SELECT trip_id, shape_id FROM trips WHERE trip_id IN (${placeholders})`,
+  );
+  await tripStmt.bind(tripIds);
+  while (await tripStmt.step()) {
+    const row = (await tripStmt.getAsObject()) as { trip_id: string; shape_id: string | null };
+    tripShapes.push({
+      tripId: String(row.trip_id),
+      shapeId: row.shape_id == null || row.shape_id === '' ? null : String(row.shape_id),
+    });
+  }
+  await tripStmt.free();
+
+  const shapeIds = [...new Set(tripShapes.map((t) => t.shapeId).filter((s): s is string => !!s))];
+  const pointsByShape: Record<string, [number, number][]> = {};
+  if (shapeIds.length > 0) {
+    const shapeRows = await gtfs.getShapes({ shapeId: shapeIds });
+    // Order by shape_pt_sequence within each shape.
+    const grouped: Record<string, { seq: number; lat: number; lon: number }[]> = {};
+    for (const r of shapeRows) {
+      (grouped[r.shape_id] ??= []).push({
+        seq: Number(r.shape_pt_sequence),
+        lat: Number(r.shape_pt_lat),
+        lon: Number(r.shape_pt_lon),
+      });
+    }
+    for (const [sid, pts] of Object.entries(grouped)) {
+      pts.sort((a, b) => a.seq - b.seq);
+      pointsByShape[sid] = pts.map((p): [number, number] => [p.lon, p.lat]);
+    }
+  }
+
+  const out: Record<string, [number, number][]> = {};
+  for (const t of tripShapes) {
+    out[t.tripId] = t.shapeId ? pointsByShape[t.shapeId] ?? [] : [];
+  }
+  return out;
+}
+
+function collectTripIds(journeys: { legs: ReadonlyArray<unknown> }[]): string[] {
+  const out = new Set<string>();
+  for (const j of journeys) {
+    for (const leg of j.legs) {
+      const trip = (leg as { trip?: { tripId?: unknown } }).trip;
+      if (trip && typeof trip.tripId === 'string') out.add(trip.tripId);
+    }
+  }
+  return [...out];
 }
 
 const api: WorkerApi = {
@@ -159,8 +253,8 @@ const api: WorkerApi = {
     if (!gtfs) throw new Error('GTFS not loaded');
     const trimmed = query.trim();
     if (trimmed.length < 2) return [];
-    const stops = await gtfs.getStops({ name: trimmed });
-    const platforms = stops.filter((s) => s.location_type !== 1);
+    const list = await gtfs.getStops({ name: trimmed });
+    const platforms = list.filter((s) => s.location_type !== 1);
     const byName = new Map<string, NamedStopGroup>();
     for (const s of platforms) {
       const existing = byName.get(s.stop_name);
@@ -194,9 +288,74 @@ const api: WorkerApi = {
 
     const t1 = performance.now();
     const journeys = await hydrateJourneys(gtfs, raw);
+    const shapesByTripId = await fetchShapesByTripId(collectTripIds(journeys));
     const hydrateMs = performance.now() - t1;
 
-    return { computeMs, hydrateMs, rawCount: raw.length, journeys };
+    return { computeMs, hydrateMs, rawCount: raw.length, journeys, shapesByTripId };
+  },
+
+  async planForPois(input: PoiPlanInput): Promise<PoiPlanResult> {
+    if (!gtfs || !inputs || !stops) throw new Error('GTFS not loaded');
+    const {
+      origin,
+      destination,
+      date,
+      departAfterSeconds,
+      radiusMeters = 1500,
+      walkingSpeedMps = 1.2,
+      maxNearbyStops = 12,
+    } = input;
+    if (origin.id === destination.id) {
+      throw new Error('origin and destination POIs share the same id');
+    }
+
+    const findOpts = { radiusMeters, walkingSpeedMps, maxNearbyStops };
+    const originNearby = findNearbyStops(origin, stops, findOpts);
+    const destinationNearby = findNearbyStops(destination, stops, findOpts);
+    if (originNearby.length === 0) throw new Error('No transit stops near the origin POI');
+    if (destinationNearby.length === 0) throw new Error('No transit stops near the destination POI');
+
+    const t0 = performance.now();
+    const raw = planForPois({
+      inputs,
+      origin,
+      destination,
+      originNearby,
+      destinationNearby,
+      date: new Date(`${date}T12:00:00Z`),
+      departAfterSeconds,
+    });
+    const computeMs = performance.now() - t0;
+
+    const t1 = performance.now();
+    // Strip the POI walking legs and prepare the middle for hydration in one pass.
+    interface PreparedJourney {
+      raw: RawJourney;
+      partial: Omit<PoiHydratedJourney, 'middleLegs'>;
+    }
+    const prepared: PreparedJourney[] = [];
+    for (const j of raw) {
+      const partial = stripPoiOuterLegs(j, origin, destination);
+      if (partial) prepared.push({ raw: j, partial });
+    }
+    const middleAsRawJourneys: RawJourney[] = prepared.map((p) => ({
+      legs: p.raw.legs.slice(1, -1),
+      departureTime: p.raw.departureTime,
+      arrivalTime: p.raw.arrivalTime,
+    }));
+    const hydratedMiddle = await hydrateJourneys(gtfs, middleAsRawJourneys);
+
+    const out: PoiHydratedJourney[] = prepared.map((p, i) => ({
+      ...p.partial,
+      middleLegs: hydratedMiddle[i]?.legs ?? [],
+    }));
+
+    const shapesByTripId = await fetchShapesByTripId(
+      collectTripIds(out.map((j) => ({ legs: j.middleLegs }))),
+    );
+    const hydrateMs = performance.now() - t1;
+
+    return { computeMs, hydrateMs, rawCount: raw.length, journeys: out, shapesByTripId };
   },
 
   async close() {
@@ -205,8 +364,67 @@ const api: WorkerApi = {
       gtfs = null;
     }
     raptor = null;
+    inputs = null;
+    stops = null;
   },
 };
+
+interface RawTransferLeg {
+  origin: string;
+  destination: string;
+  duration: number;
+  startTime: number;
+  endTime: number;
+}
+
+function isTransferLeg(leg: unknown): leg is RawTransferLeg {
+  return (
+    typeof leg === 'object' &&
+    leg !== null &&
+    typeof (leg as { duration?: unknown }).duration === 'number' &&
+    !('stopTimes' in leg)
+  );
+}
+
+/**
+ * For a raw POI journey produced by planForPois, take the first and last legs
+ * (which must be the POI walks) and turn them into structured info, returning a
+ * partial PoiHydratedJourney without the hydrated middle.
+ */
+function stripPoiOuterLegs(
+  raw: RawJourney,
+  originPoi: PoiPlanInput['origin'],
+  destinationPoi: PoiPlanInput['destination'],
+): Omit<PoiHydratedJourney, 'middleLegs'> | null {
+  if (raw.legs.length < 2) return null;
+  const first = raw.legs[0];
+  const last = raw.legs[raw.legs.length - 1];
+  if (!isTransferLeg(first) || !isTransferLeg(last)) return null;
+  if (first.origin !== originPoi.id || last.destination !== destinationPoi.id) return null;
+
+  const firstStopId = first.destination;
+  const lastStopId = last.origin;
+  const firstStopCoords = stops?.find((s) => s.id === firstStopId);
+  const lastStopCoords = stops?.find((s) => s.id === lastStopId);
+  return {
+    departureTime: raw.departureTime,
+    arrivalTime: raw.arrivalTime,
+    origin: { id: originPoi.id, lat: originPoi.lat, lon: originPoi.lon },
+    destination: { id: destinationPoi.id, lat: destinationPoi.lat, lon: destinationPoi.lon },
+    originWalk: {
+      duration: first.duration,
+      toStopId: firstStopId,
+      toStopLat: firstStopCoords?.lat ?? NaN,
+      toStopLon: firstStopCoords?.lon ?? NaN,
+    },
+    destinationWalk: {
+      duration: last.duration,
+      fromStopId: lastStopId,
+      fromStopLat: lastStopCoords?.lat ?? NaN,
+      fromStopLon: lastStopCoords?.lon ?? NaN,
+    },
+  };
+}
 
 function gtfsPhaseLabel(phase: string): string {
   switch (phase) {

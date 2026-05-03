@@ -1,5 +1,9 @@
 import type { Stop } from 'gtfs-sqljs';
-import type { HydratedJourney, BuildRaptorInputsOptions } from 'gtfs-sqljs-raptor';
+import type {
+  HydratedJourney,
+  HydratedTransferLeg,
+  BuildRaptorInputsOptions,
+} from 'gtfs-sqljs-raptor';
 
 export interface LoadResult {
   loadMs: number;
@@ -10,6 +14,8 @@ export interface LoadResult {
   routeCount: number;
   serviceIdsRunningSomeDay: number;
   feedTimezone: string | null;
+  /** Bounding box of all stops with valid coords, or null if the feed has none. */
+  feedBounds: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
 }
 
 export interface PlanInput {
@@ -23,12 +29,50 @@ export interface PlanInput {
   rangeSeconds?: number;
 }
 
+export interface PoiPlanInput {
+  origin: { id: string; lat: number; lon: number };
+  destination: { id: string; lat: number; lon: number };
+  date: string;
+  departAfterSeconds: number;
+  /** Default 1500 m. */
+  radiusMeters?: number;
+  /** Default 1.2 m/s. */
+  walkingSpeedMps?: number;
+  /** Default 12. */
+  maxNearbyStops?: number;
+}
+
+export interface PoiHydratedJourney {
+  departureTime: number;
+  arrivalTime: number;
+  origin: { id: string; lat: number; lon: number };
+  destination: { id: string; lat: number; lon: number };
+  /** Walk from the origin POI to the first transit stop. */
+  originWalk: { duration: number; toStopId: string; toStopLat: number; toStopLon: number };
+  /** Walk from the last transit stop to the destination POI. */
+  destinationWalk: { duration: number; fromStopId: string; fromStopLat: number; fromStopLon: number };
+  /** All non-POI legs (timetable + intra-feed transfer walks). */
+  middleLegs: HydratedJourney['legs'];
+}
+
 export interface PlanResult {
   computeMs: number;
   hydrateMs: number;
   rawCount: number;
   journeys: HydratedJourney[];
+  /** [lon, lat] pairs from shapes.txt, keyed by trip_id. Empty array when missing. */
+  shapesByTripId: Record<string, [number, number][]>;
 }
+
+export interface PoiPlanResult {
+  computeMs: number;
+  hydrateMs: number;
+  rawCount: number;
+  journeys: PoiHydratedJourney[];
+  shapesByTripId: Record<string, [number, number][]>;
+}
+
+export type HydratedTransferLegRef = HydratedTransferLeg;
 
 export interface NamedStopGroup {
   name: string;
@@ -72,5 +116,6 @@ export interface WorkerApi {
   ): Promise<{ inputsMs: number; indexMs: number }>;
   searchStopGroups(query: string, limit?: number): Promise<NamedStopGroup[]>;
   plan(input: PlanInput): Promise<PlanResult>;
+  planForPois(input: PoiPlanInput): Promise<PoiPlanResult>;
   close(): Promise<void>;
 }

@@ -22,3 +22,15 @@ export type {
   SerializedTransfer,
   SerializeRaptorInputsOptions,
 } from './serialize.js';
+export {
+  planForPois,
+  findNearbyStops,
+  loadStopLocations,
+} from './planForPois.js';
+export type {
+  Poi,
+  StopLocation,
+  NearbyStop,
+  FindNearbyStopsOptions,
+  PlanForPoisParams,
+} from './planForPois.js';
