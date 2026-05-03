@@ -1,7 +1,7 @@
 import type { HydratedJourney, HydratedTimetableLeg } from 'gtfs-sqljs-raptor';
 import { lineString, point } from '@turf/helpers';
 import lineSlice from '@turf/line-slice';
-import type { PoiHydratedJourney } from '../worker/api';
+import type { HydratedCoordinateJourney } from '../worker/api';
 import { asHex, readableTextColor } from './contrast';
 
 export interface WalkFeature {
@@ -144,17 +144,18 @@ export function geometryForJourney(
 }
 
 /**
- * Build map-friendly geometry for a POI journey (origin walk → middle → destination walk).
+ * Build map-friendly geometry for a coordinate journey
+ * (origin walk → middle → destination walk).
  */
-export function geometryForPoiJourney(
-  journey: PoiHydratedJourney,
+export function geometryForCoordinateJourney(
+  journey: HydratedCoordinateJourney,
   shapesByTripId: Record<string, [number, number][]>,
 ): JourneyGeometry {
   const walks: WalkFeature[] = [];
   const transits: TransitFeature[] = [];
   const box = [Infinity, Infinity, -Infinity, -Infinity];
 
-  // Origin walk: POI → first transit stop.
+  // Origin walk: coordinate → first transit stop.
   if (Number.isFinite(journey.originWalk.toStopLat) && Number.isFinite(journey.originWalk.toStopLon)) {
     const coords: [number, number][] = [
       [journey.origin.lon, journey.origin.lat],
@@ -198,7 +199,7 @@ export function geometryForPoiJourney(
     }
   }
 
-  // Destination walk: last transit stop → POI.
+  // Destination walk: last transit stop → coordinate.
   if (
     Number.isFinite(journey.destinationWalk.fromStopLat) &&
     Number.isFinite(journey.destinationWalk.fromStopLon)
