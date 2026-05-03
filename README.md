@@ -1,5 +1,7 @@
 # gtfs-sqljs-raptor
 
+[Live demo](https://sysdevrun.github.io/gtfs-sqljs-raptor/)
+
 Bridge between [`gtfs-sqljs`](https://github.com/sysdevrun/gtfs-sqljs) (a SQLite-backed GTFS loader that runs in browsers and Node) and [`raptor-journey-planner`](https://github.com/planarnetwork/raptor) (an in-memory implementation of the Raptor journey-planning algorithm).
 
 Two pure functions:
