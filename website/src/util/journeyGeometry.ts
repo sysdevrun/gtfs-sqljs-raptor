@@ -1,4 +1,6 @@
 import type { HydratedJourney, HydratedTimetableLeg } from 'gtfs-sqljs-raptor';
+import { lineString, point } from '@turf/helpers';
+import lineSlice from '@turf/line-slice';
 import type { PoiHydratedJourney } from '../worker/api';
 import { asHex, readableTextColor } from './contrast';
 
@@ -27,8 +29,38 @@ function isTimetableLeg(leg: HydratedJourney['legs'][number]): leg is HydratedTi
   return leg.type === 'timetable';
 }
 
+/**
+ * Slice the shape between the leg's boarding and alighting stops by projecting
+ * both onto the polyline with turf and keeping the segment in between. Returns
+ * `null` if either stop lacks coordinates (caller falls back to the full shape).
+ */
+function sliceShapeForLeg(
+  leg: HydratedTimetableLeg,
+  shape: [number, number][],
+): [number, number][] | null {
+  const o = leg.origin;
+  const d = leg.destination;
+  if (
+    typeof o.stop_lon !== 'number' || typeof o.stop_lat !== 'number' ||
+    typeof d.stop_lon !== 'number' || typeof d.stop_lat !== 'number'
+  ) {
+    return null;
+  }
+  const line = lineString(shape);
+  const sliced = lineSlice(
+    point([o.stop_lon, o.stop_lat]),
+    point([d.stop_lon, d.stop_lat]),
+    line,
+  );
+  return sliced.geometry.coordinates as [number, number][];
+}
+
 function legCoords(leg: HydratedTimetableLeg, shape: [number, number][] | undefined): [number, number][] {
-  if (shape && shape.length >= 2) return shape;
+  if (shape && shape.length >= 2) {
+    const sliced = sliceShapeForLeg(leg, shape);
+    if (sliced && sliced.length >= 2) return sliced;
+    return shape;
+  }
   // Fall back to a polyline through the leg's stop_times.
   const out: [number, number][] = [];
   for (const st of leg.stopTimes) {
