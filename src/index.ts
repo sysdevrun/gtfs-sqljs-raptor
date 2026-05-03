@@ -23,14 +23,14 @@ export type {
   SerializeRaptorInputsOptions,
 } from './serialize.js';
 export {
-  planForPois,
+  planByCoordinates,
   findNearbyStops,
   loadStopLocations,
-} from './planForPois.js';
+} from './planByCoordinates.js';
 export type {
-  Poi,
+  Coordinate,
   StopLocation,
   NearbyStop,
   FindNearbyStopsOptions,
-  PlanForPoisParams,
-} from './planForPois.js';
+  PlanByCoordinatesParams,
+} from './planByCoordinates.js';

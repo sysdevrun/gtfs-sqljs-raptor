@@ -85,6 +85,89 @@ Options:
 | `bridgeParentStations` | `false` | Adds zero-duration transfers between `parent_station` ↔ children. **Largely cosmetic** — see the gotcha below. |
 | `defaultInterchangeSeconds` | `0` | Interchange time for stops not in `transfers.txt`. |
 
+### `planByCoordinates(params)`
+
+Plan an itinerary between two arbitrary geographic coordinates that are not in
+`stops.txt` (a typed address, a pin on a map, anything with a lat/lon).
+Returns a `Journey[]` from `raptor-journey-planner`.
+
+The function takes a `RaptorInputs` (built once), an `origin` and `destination`
+coordinate, and the lists of nearby real stops the planner is allowed to walk
+to/from at each end. **The planner picks the best nearby stop on each side
+itself**, taking walking time into account — so for a given origin coordinate,
+the cheapest combined `(walk + transit + walk)` itinerary wins, not just the
+geographically closest stop.
+
+How it works internally: per query, two phantom trips are appended to a clone
+of `inputs.trips` (one per endpoint coordinate, with `pickUp: false / dropOff:
+false` so the algorithm never tries to board them) plus a few walking edges
+into a clone of `inputs.transfers`. `RaptorAlgorithmFactory.create` then sees
+the coordinates as first-class stops, but no real journey can ever traverse
+the phantom trips. The base `inputs` are not mutated — the function is safe
+to call concurrently for different queries.
+
+```ts
+import {
+  buildRaptorInputs,
+  findNearbyStops,
+  loadStopLocations,
+  planByCoordinates,
+  hydrateJourneys,
+} from 'gtfs-sqljs-raptor';
+
+const inputs = await buildRaptorInputs(gtfs, { bridgeSameNameStops: true });
+const stops = await loadStopLocations(gtfs); // one SQL pass, cache it
+
+const origin      = { id: '__origin__',      lat: -21.28663, lon: 55.40921 };
+const destination = { id: '__destination__', lat: -20.87877, lon: 55.44845 };
+
+const findOpts = { radiusMeters: 1500, walkingSpeedMps: 1.2, maxNearbyStops: 12 };
+const journeys = planByCoordinates({
+  inputs,
+  origin,
+  destination,
+  originNearby:      findNearbyStops(origin,      stops, findOpts),
+  destinationNearby: findNearbyStops(destination, stops, findOpts),
+  date: new Date('2026-05-04T12:00:00Z'),
+  departAfterSeconds: 8 * 3600,
+});
+
+// First and last legs reference the input ids (synthetic walks).
+// hydrateJourneys can't look those up — strip them off and render the
+// outer walks from the input coordinates yourself.
+const middle = journeys[0].legs.slice(1, -1);
+const hydrated = await hydrateJourneys(gtfs, [{ ...journeys[0], legs: middle }]);
+```
+
+The `id` on `Coordinate` is an internal handle for the synthetic phantom stop;
+it must be different between origin and destination, and must not collide with
+any real `stop_id` in your feed. Pick something obviously synthetic
+(e.g. `'__origin__'`) — it shows up in the returned journey's outer walking
+legs so callers can recognise them when stripping for hydration.
+
+`scripts/coordinate-demo.mjs` is a runnable example over the Car Jaune fixture.
+
+#### Helpers
+
+`findNearbyStops(point, stops, options?)` — linear-scan haversine lookup.
+Sorts closest first, caps at `maxNearbyStops` (default 8). Default radius
+400 m, default walking speed 1.2 m/s. For larger feeds, plug in a kd-tree
+or geohash index and build the `NearbyStop[]` array yourself.
+
+`loadStopLocations(gtfs)` — convenience: one SQL pass over `stops.stop_lat /
+stop_lon`, returns `{ id, lat, lon }[]`. Run once at startup, hand the result
+to `findNearbyStops` per query.
+
+#### Performance
+
+Per query: clone `{trips, transfers, interchange}`, append 2 phantom trips
+and a handful of walking edges, call `RaptorAlgorithmFactory.create`, run
+the query. On the Car Jaune feed (~2k trips, ~33k stop_times) the whole
+thing runs in ~70 ms — independent of how many candidate origin/destination
+coordinates you might have on file, because only the two for the current
+query are ever passed in. On Astuce (Rouen, ~22k trips, ~600k stop_times)
+the per-query cost is ~115 ms.
+
 ### `hydrateJourneys(gtfs, journeys)`
 
 Returns `Promise<HydratedJourney[]>`. Each leg becomes either:

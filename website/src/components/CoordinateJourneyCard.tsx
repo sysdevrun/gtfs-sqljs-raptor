@@ -1,5 +1,5 @@
 import type { HydratedTimetableLeg, HydratedJourney } from 'gtfs-sqljs-raptor';
-import type { PoiHydratedJourney } from '../worker/api';
+import type { HydratedCoordinateJourney } from '../worker/api';
 import { fmtDuration, fmtTime } from '../util/format';
 import { RouteBadge } from './RouteBadge';
 
@@ -8,13 +8,13 @@ function isTimetableLeg(leg: HydratedJourney['legs'][number]): leg is HydratedTi
 }
 
 interface Props {
-  journey: PoiHydratedJourney;
+  journey: HydratedCoordinateJourney;
   index: number;
   selected: boolean;
   onSelect: () => void;
 }
 
-export function PoiJourneyCard({ journey, index, selected, onSelect }: Props) {
+export function CoordinateJourneyCard({ journey, index, selected, onSelect }: Props) {
   const total = journey.arrivalTime - journey.departureTime;
   const transfers = journey.middleLegs.filter(isTimetableLeg).length - 1;
   return (

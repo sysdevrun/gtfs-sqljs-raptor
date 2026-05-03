@@ -705,32 +705,32 @@ code {
   font-weight: 400;
 }
 
-/* POI planner */
-.poi-planner {
+/* Coordinate planner */
+.coord-planner {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 14px 18px;
 }
-.poi-planner__row {
+.coord-planner__row {
   display: grid;
   grid-template-columns: 1fr 1fr 110px auto;
   gap: 12px;
   align-items: end;
 }
-.poi-planner__row:first-child {
+.coord-planner__row:first-child {
   grid-template-columns: 1fr 1fr auto;
 }
 @media (max-width: 880px) {
-  .poi-planner__row,
-  .poi-planner__row:first-child {
+  .coord-planner__row,
+  .coord-planner__row:first-child {
     grid-template-columns: 1fr 1fr;
   }
-  .poi-planner__row .planner-grid__submit {
+  .coord-planner__row .planner-grid__submit {
     grid-column: 1 / -1;
   }
 }
-.poi-pick {
+.coord-pick {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -743,31 +743,31 @@ code {
   transition: border-color 0.1s, background 0.1s;
   text-align: left;
 }
-.poi-pick:hover:not(:disabled) {
+.coord-pick:hover:not(:disabled) {
   border-color: var(--primary);
 }
-.poi-pick--active {
+.coord-pick--active {
   border-color: var(--primary);
   background: var(--primary-soft);
   border-style: solid;
 }
-.poi-pick--filled {
+.coord-pick--filled {
   border-style: solid;
   border-color: var(--border-strong);
 }
-.poi-pick__label {
+.coord-pick__label {
   font-size: 0.74rem;
   font-weight: 700;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.poi-pick__value {
+.coord-pick__value {
   font-family: var(--font-mono);
   font-size: 0.92rem;
   color: var(--text);
 }
-.poi-pick--clear {
+.coord-pick--clear {
   align-self: stretch;
   align-items: center;
   justify-content: center;
@@ -776,7 +776,7 @@ code {
   font-weight: 600;
   color: var(--text-muted);
 }
-.poi-pick--clear:disabled {
+.coord-pick--clear:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -795,7 +795,7 @@ code {
 .map .maplibregl-canvas {
   display: block;
 }
-.map-poi {
+.map-endpoint {
   width: 26px;
   height: 26px;
   border-radius: 50%;
@@ -811,7 +811,7 @@ code {
   box-shadow: 0 2px 4px rgba(15, 23, 42, 0.35);
   cursor: default;
 }
-.map-poi--destination {
+.map-endpoint--destination {
   background: var(--success);
 }
 

@@ -5,25 +5,25 @@ import {
   findNearbyStops,
   hydrateJourneys,
   loadStopLocations,
-  planForPois,
-  type Poi,
+  planByCoordinates,
+  type Coordinate,
 } from '../../src/index.js';
 import { loadFixture } from '../helpers/loadFixture.js';
 
 // Hôtel de Ville de Saint-Louis (south of Réunion).
-const HOTEL_DE_VILLE_ST_LOUIS: Poi = {
-  id: 'POI_HDV_ST_LOUIS',
+const HOTEL_DE_VILLE_ST_LOUIS: Coordinate = {
+  id: 'COORD_HDV_ST_LOUIS',
   lat: -21.28663,
   lon: 55.40921,
 };
 // Hôtel de Ville de Saint-Denis (capital, north).
-const HOTEL_DE_VILLE_ST_DENIS: Poi = {
-  id: 'POI_HDV_ST_DENIS',
+const HOTEL_DE_VILLE_ST_DENIS: Coordinate = {
+  id: 'COORD_HDV_ST_DENIS',
   lat: -20.87877,
   lon: 55.44845,
 };
 
-describe('Car Jaune e2e: Hôtel de Ville Saint-Louis → Hôtel de Ville Saint-Denis (POIs)', () => {
+describe('Car Jaune e2e: Hôtel de Ville Saint-Louis → Hôtel de Ville Saint-Denis (coordinates)', () => {
   let gtfs: GtfsSqlJs;
 
   beforeAll(async () => {
@@ -48,7 +48,7 @@ describe('Car Jaune e2e: Hôtel de Ville Saint-Louis → Hôtel de Ville Saint-D
 
     // 2026-05-04 is a Monday in Indian/Reunion (UTC+4); noon UTC keeps date and
     // dow on the same calendar day for raptor.
-    const journeys = planForPois({
+    const journeys = planByCoordinates({
       inputs,
       origin: HOTEL_DE_VILLE_ST_LOUIS,
       destination: HOTEL_DE_VILLE_ST_DENIS,
@@ -67,7 +67,7 @@ describe('Car Jaune e2e: Hôtel de Ville Saint-Louis → Hôtel de Ville Saint-D
 
     const j = journeys[0];
 
-    // Outer legs are walks from/to the POIs.
+    // Outer legs are walks from/to the chosen coordinates.
     expect(j.legs[0].origin).toBe(HOTEL_DE_VILLE_ST_LOUIS.id);
     expect(j.legs[j.legs.length - 1].destination).toBe(HOTEL_DE_VILLE_ST_DENIS.id);
 
@@ -75,7 +75,7 @@ describe('Car Jaune e2e: Hôtel de Ville Saint-Louis → Hôtel de Ville Saint-D
     const timetable = j.legs.find((l) => 'stopTimes' in l && Array.isArray(l.stopTimes));
     expect(timetable).toBeDefined();
 
-    // Hydrate the real-stop legs (POI legs aren't in stops.txt, strip them off).
+    // Hydrate the real-stop legs (endpoint legs aren't in stops.txt, strip them off).
     const middle = j.legs.slice(1, -1);
     const stripped = [{ ...j, legs: middle }];
     const hydrated = await hydrateJourneys(gtfs, stripped);
