@@ -24,9 +24,14 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install root package (for `file:..` dependency)
+      # The website depends on the root package via `file:..`, which resolves
+      # to `dist/` per the root package.json `main`/`types`. Install + build
+      # the root first so those files exist before the website is installed.
+      - name: Install root package
         run: npm install --no-audit --no-fund
-        working-directory: .
+
+      - name: Build root package
+        run: npm run build
 
       - name: Install website dependencies
         run: npm install --no-audit --no-fund
