@@ -13,6 +13,7 @@
     "comlink": "^4.4.1",
     "gtfs-sqljs": "^0.7.0",
     "gtfs-sqljs-raptor": "file:..",
+    "maplibre-gl": "^5.24.0",
     "raptor-journey-planner": "2.2.3",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",

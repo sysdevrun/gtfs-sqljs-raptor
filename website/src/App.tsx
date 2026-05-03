@@ -1,14 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as Comlink from 'comlink';
 import type { HydratedJourney } from 'gtfs-sqljs-raptor';
-import type { LoadResult, NamedStopGroup, PlannerProgress, WorkerApi } from './worker/api';
+import type {
+  LoadResult,
+  NamedStopGroup,
+  PlannerProgress,
+  PoiHydratedJourney,
+  WorkerApi,
+} from './worker/api';
 import { GtfsSelectorPanel } from './components/GtfsSelectorPanel';
 import { StopAutocomplete } from './components/StopAutocomplete';
 import { SettingsPanel, type PlannerSettings } from './components/SettingsPanel';
 import { TimingsBar, type Timings } from './components/TimingsBar';
 import { JourneyCard } from './components/JourneyCard';
+import { PoiJourneyCard } from './components/PoiJourneyCard';
+import { MapView, type PickMode, type PoiPick } from './components/MapView';
 import { ProgressBar } from './components/ProgressBar';
 import { getProxyUrl } from './util/proxy';
+import {
+  geometryForJourney,
+  geometryForPoiJourney,
+  type JourneyGeometry,
+} from './util/journeyGeometry';
 import {
   fmtHHMMInput,
   nowLocalSecondsSinceMidnight,
@@ -27,6 +40,8 @@ const DEFAULT_SETTINGS: PlannerSettings = {
   rangeMinutes: 60,
 };
 
+type Mode = 'stops' | 'pois';
+
 export function App() {
   const workerRef = useRef<{ raw: Worker; api: Comlink.Remote<WorkerApi> } | null>(null);
   const [feedTitle, setFeedTitle] = useState<string | null>(null);
@@ -37,24 +52,33 @@ export function App() {
   const [progress, setProgress] = useState<PlannerProgress | null>(null);
 
   const [settings, setSettings] = useState<PlannerSettings>(DEFAULT_SETTINGS);
+  const [mode, setMode] = useState<Mode>('stops');
+
+  // Stop-mode endpoints.
   const [origin, setOrigin] = useState<NamedStopGroup | null>(null);
   const [destination, setDestination] = useState<NamedStopGroup | null>(null);
+
+  // POI-mode endpoints (lat/lon).
+  const [originPoi, setOriginPoi] = useState<PoiPick | null>(null);
+  const [destinationPoi, setDestinationPoi] = useState<PoiPick | null>(null);
+  const [pickMode, setPickMode] = useState<PickMode>(null);
+
   const [date, setDate] = useState<string>(todayLocalISODate());
   const [timeSec, setTimeSec] = useState<number>(nowLocalSecondsSinceMidnight());
-  const [journeys, setJourneys] = useState<HydratedJourney[]>([]);
+
+  // Results for both modes — one of these is populated at a time.
+  const [stopJourneys, setStopJourneys] = useState<HydratedJourney[]>([]);
+  const [poiJourneys, setPoiJourneys] = useState<PoiHydratedJourney[]>([]);
+  const [shapesByTripId, setShapesByTripId] = useState<Record<string, [number, number][]>>({});
+  const [selectedJourney, setSelectedJourney] = useState<number>(0);
+
   const [timings, setTimings] = useState<Timings>({});
 
-  // Boot the worker on mount. The worker posts a one-shot `__workerReady`
-  // message as soon as its module finishes evaluating; we intercept it before
-  // handing the worker over to Comlink (Comlink consumes every other message).
-  // Without the handshake, a module-eval failure leaves Comlink calls hanging
-  // silently because the worker exited before any onmessage handler attached.
   const [workerReady, setWorkerReady] = useState(false);
   useEffect(() => {
     const w = new Worker(new URL('./worker/gtfsRaptor.worker.ts', import.meta.url), {
       type: 'module',
     });
-
     let resolved = false;
     const onReady = (e: MessageEvent) => {
       if (e.data && e.data.__workerReady) {
@@ -65,7 +89,6 @@ export function App() {
       }
     };
     w.addEventListener('message', onReady);
-
     const timeout = setTimeout(() => {
       if (!resolved) {
         setError(
@@ -73,7 +96,6 @@ export function App() {
         );
       }
     }, 5000);
-
     return () => {
       clearTimeout(timeout);
       w.terminate();
@@ -93,9 +115,6 @@ export function App() {
     [settings],
   );
 
-  // Absolute URL for sql-wasm.wasm, computed against the page's deployment
-  // root so it works under any base path (`/` in dev, `/raptor/` in prod).
-  // BASE_URL is set from Vite's `base` config and ends with `/`.
   const wasmUrl = useMemo(
     () => new URL(`${import.meta.env.BASE_URL}sql-wasm.wasm`, window.location.href).href,
     [],
@@ -111,10 +130,14 @@ export function App() {
       return;
     }
     setError(null);
-    setJourneys([]);
+    setStopJourneys([]);
+    setPoiJourneys([]);
+    setShapesByTripId({});
     setTimings({});
     setOrigin(null);
     setDestination(null);
+    setOriginPoi(null);
+    setDestinationPoi(null);
     setLoadResult(null);
     setProgress({ phase: 'load', percent: 0, message: 'Starting…' });
     setPhase('loading');
@@ -165,11 +188,13 @@ export function App() {
     }
   };
 
-  const plan = async () => {
+  const planStops = async () => {
     if (!workerRef.current || !origin || !destination) return;
     setPhase('planning');
     setError(null);
-    setJourneys([]);
+    setStopJourneys([]);
+    setPoiJourneys([]);
+    setShapesByTripId({});
     try {
       const result = await workerRef.current.api.plan({
         originStopIds: origin.stopIds,
@@ -186,7 +211,9 @@ export function App() {
         hydrateMs: result.hydrateMs,
         rawCount: result.rawCount,
       }));
-      setJourneys(result.journeys);
+      setStopJourneys(result.journeys);
+      setShapesByTripId(result.shapesByTripId);
+      setSelectedJourney(0);
       setPhase('ready');
     } catch (e) {
       console.error(e);
@@ -195,8 +222,71 @@ export function App() {
     }
   };
 
+  const planPois = async () => {
+    if (!workerRef.current || !originPoi || !destinationPoi) return;
+    setPhase('planning');
+    setError(null);
+    setStopJourneys([]);
+    setPoiJourneys([]);
+    setShapesByTripId({});
+    try {
+      const result = await workerRef.current.api.planForPois({
+        origin: { id: '__poi_origin__', lat: originPoi.lat, lon: originPoi.lon },
+        destination: { id: '__poi_destination__', lat: destinationPoi.lat, lon: destinationPoi.lon },
+        date,
+        departAfterSeconds: timeSec,
+      });
+      setTimings((t) => ({
+        loadMs: t.loadMs,
+        inputsMs: t.inputsMs,
+        indexMs: t.indexMs,
+        computeMs: result.computeMs,
+        hydrateMs: result.hydrateMs,
+        rawCount: result.rawCount,
+      }));
+      setPoiJourneys(result.journeys);
+      setShapesByTripId(result.shapesByTripId);
+      setSelectedJourney(0);
+      setPhase('ready');
+    } catch (e) {
+      console.error(e);
+      setError(e instanceof Error ? e.message : String(e));
+      setPhase('ready');
+    }
+  };
+
+  // Map-mode picking: clicking the map sets origin/destination POI based on
+  // pickMode. When the slot is filled, advance the picker so the user can pick
+  // the next slot without an extra click.
+  const onMapPick = (slot: 'origin' | 'destination', point: PoiPick) => {
+    if (slot === 'origin') {
+      setOriginPoi(point);
+      if (!destinationPoi) setPickMode('destination');
+      else setPickMode(null);
+    } else {
+      setDestinationPoi(point);
+      if (!originPoi) setPickMode('origin');
+      else setPickMode(null);
+    }
+  };
+
+  // Geometry for the currently-selected journey.
+  const geometry: JourneyGeometry | null = useMemo(() => {
+    if (mode === 'pois' && poiJourneys[selectedJourney]) {
+      return geometryForPoiJourney(poiJourneys[selectedJourney], shapesByTripId);
+    }
+    if (mode === 'stops' && stopJourneys[selectedJourney]) {
+      return geometryForJourney(stopJourneys[selectedJourney], shapesByTripId);
+    }
+    return null;
+  }, [mode, poiJourneys, stopJourneys, selectedJourney, shapesByTripId]);
+
+  const initialBounds = loadResult?.feedBounds ?? null;
+
   const ready = phase === 'ready' || phase === 'planning' || phase === 'rebuilding';
   const planning = phase === 'planning';
+  const canPlanStops = !!origin && !!destination;
+  const canPlanPois = !!originPoi && !!destinationPoi;
 
   return (
     <div className="app">
@@ -257,71 +347,220 @@ export function App() {
           <section className="panel panel--planner">
             <header className="panel__header">
               <h2>2. Plan a journey</h2>
+              <div className="mode-toggle" role="tablist" aria-label="Endpoint selection mode">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === 'stops'}
+                  className={`mode-toggle__btn${mode === 'stops' ? ' mode-toggle__btn--active' : ''}`}
+                  onClick={() => {
+                    setMode('stops');
+                    setPickMode(null);
+                  }}
+                >
+                  Stops
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === 'pois'}
+                  className={`mode-toggle__btn${mode === 'pois' ? ' mode-toggle__btn--active' : ''}`}
+                  onClick={() => setMode('pois')}
+                >
+                  Pick on map
+                </button>
+              </div>
             </header>
-            <div className="planner-grid">
-              {workerRef.current && (
-                <>
-                  <StopAutocomplete
-                    label="Origin"
-                    placeholder="Type at least 2 characters…"
-                    value={origin}
-                    onChange={setOrigin}
-                    worker={workerRef.current.api}
+            {mode === 'stops' ? (
+              <div className="planner-grid">
+                {workerRef.current && (
+                  <>
+                    <StopAutocomplete
+                      label="Origin"
+                      placeholder="Type at least 2 characters…"
+                      value={origin}
+                      onChange={setOrigin}
+                      worker={workerRef.current.api}
+                    />
+                    <StopAutocomplete
+                      label="Destination"
+                      placeholder="Type at least 2 characters…"
+                      value={destination}
+                      onChange={setDestination}
+                      worker={workerRef.current.api}
+                    />
+                  </>
+                )}
+                <label className="field">
+                  <span className="field__label">Date</span>
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                    className="field__input"
                   />
-                  <StopAutocomplete
-                    label="Destination"
-                    placeholder="Type at least 2 characters…"
-                    value={destination}
-                    onChange={setDestination}
-                    worker={workerRef.current.api}
+                </label>
+                <label className="field">
+                  <span className="field__label">Depart at</span>
+                  <input
+                    type="time"
+                    value={fmtHHMMInput(timeSec)}
+                    onChange={(e) => setTimeSec(parseHHMM(e.target.value))}
+                    className="field__input"
                   />
-                </>
+                </label>
+                <button
+                  className="planner-grid__submit"
+                  type="button"
+                  disabled={!canPlanStops || planning}
+                  onClick={planStops}
+                >
+                  {planning ? 'Computing…' : 'Find itineraries'}
+                </button>
+              </div>
+            ) : (
+              <div className="poi-planner">
+                <div className="poi-planner__row">
+                  <button
+                    type="button"
+                    className={`poi-pick${pickMode === 'origin' ? ' poi-pick--active' : ''}${
+                      originPoi ? ' poi-pick--filled' : ''
+                    }`}
+                    onClick={() => setPickMode((m) => (m === 'origin' ? null : 'origin'))}
+                  >
+                    <span className="poi-pick__label">A — Origin</span>
+                    <span className="poi-pick__value">
+                      {originPoi
+                        ? `${originPoi.lat.toFixed(5)}, ${originPoi.lon.toFixed(5)}`
+                        : pickMode === 'origin'
+                          ? 'Click on the map…'
+                          : 'Pick on map'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`poi-pick${pickMode === 'destination' ? ' poi-pick--active' : ''}${
+                      destinationPoi ? ' poi-pick--filled' : ''
+                    }`}
+                    onClick={() => setPickMode((m) => (m === 'destination' ? null : 'destination'))}
+                  >
+                    <span className="poi-pick__label">B — Destination</span>
+                    <span className="poi-pick__value">
+                      {destinationPoi
+                        ? `${destinationPoi.lat.toFixed(5)}, ${destinationPoi.lon.toFixed(5)}`
+                        : pickMode === 'destination'
+                          ? 'Click on the map…'
+                          : 'Pick on map'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="poi-pick poi-pick--clear"
+                    onClick={() => {
+                      setOriginPoi(null);
+                      setDestinationPoi(null);
+                      setPickMode(null);
+                      setPoiJourneys([]);
+                      setShapesByTripId({});
+                    }}
+                    disabled={!originPoi && !destinationPoi}
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div className="poi-planner__row">
+                  <label className="field">
+                    <span className="field__label">Date</span>
+                    <input
+                      type="date"
+                      value={date}
+                      onChange={(e) => setDate(e.target.value)}
+                      className="field__input"
+                    />
+                  </label>
+                  <label className="field">
+                    <span className="field__label">Depart at</span>
+                    <input
+                      type="time"
+                      value={fmtHHMMInput(timeSec)}
+                      onChange={(e) => setTimeSec(parseHHMM(e.target.value))}
+                      className="field__input"
+                    />
+                  </label>
+                  <button
+                    className="planner-grid__submit"
+                    type="button"
+                    disabled={!canPlanPois || planning}
+                    onClick={planPois}
+                  >
+                    {planning ? 'Computing…' : 'Find itineraries'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="panel panel--map">
+            <header className="panel__header">
+              <h2>Map</h2>
+              {mode === 'pois' && (
+                <span className="panel__hint">
+                  {pickMode === 'origin'
+                    ? 'Click the map to set the origin POI'
+                    : pickMode === 'destination'
+                      ? 'Click the map to set the destination POI'
+                      : 'Use the A / B buttons above, then click the map'}
+                </span>
               )}
-              <label className="field">
-                <span className="field__label">Date</span>
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  className="field__input"
-                />
-              </label>
-              <label className="field">
-                <span className="field__label">Depart at</span>
-                <input
-                  type="time"
-                  value={fmtHHMMInput(timeSec)}
-                  onChange={(e) => setTimeSec(parseHHMM(e.target.value))}
-                  className="field__input"
-                />
-              </label>
-              <button
-                className="planner-grid__submit"
-                type="button"
-                disabled={!origin || !destination || planning}
-                onClick={plan}
-              >
-                {planning ? 'Computing…' : 'Find itineraries'}
-              </button>
-            </div>
+            </header>
+            <MapView
+              origin={mode === 'pois' ? originPoi : null}
+              destination={mode === 'pois' ? destinationPoi : null}
+              pickMode={mode === 'pois' ? pickMode : null}
+              onPick={onMapPick}
+              geometry={geometry}
+              initialBounds={initialBounds}
+            />
           </section>
 
           <TimingsBar timings={timings} />
 
           <section className="panel panel--results">
             <header className="panel__header">
-              <h2>3. Results {journeys.length > 0 && <small>({journeys.length})</small>}</h2>
+              <h2>
+                3. Results{' '}
+                {(mode === 'stops' ? stopJourneys.length : poiJourneys.length) > 0 && (
+                  <small>({mode === 'stops' ? stopJourneys.length : poiJourneys.length})</small>
+                )}
+              </h2>
+              {(mode === 'stops' ? stopJourneys.length : poiJourneys.length) > 1 && (
+                <span className="panel__hint">Click a result to highlight it on the map</span>
+              )}
             </header>
-            {journeys.length === 0 && phase !== 'planning' && (
-              <p className="empty">No journey computed yet.</p>
-            )}
-            {journeys.length === 0 && phase === 'planning' && (
-              <p className="empty">Working…</p>
-            )}
+            {((mode === 'stops' && stopJourneys.length === 0) ||
+              (mode === 'pois' && poiJourneys.length === 0)) &&
+              phase !== 'planning' && <p className="empty">No journey computed yet.</p>}
+            {phase === 'planning' && <p className="empty">Working…</p>}
             <div className="journeys">
-              {journeys.map((j, i) => (
-                <JourneyCard key={i} journey={j} index={i} />
-              ))}
+              {mode === 'stops'
+                ? stopJourneys.map((j, i) => (
+                    <div
+                      key={i}
+                      className={`journey-wrap${i === selectedJourney ? ' journey-wrap--selected' : ''}`}
+                      onClick={() => setSelectedJourney(i)}
+                    >
+                      <JourneyCard journey={j} index={i} />
+                    </div>
+                  ))
+                : poiJourneys.map((j, i) => (
+                    <PoiJourneyCard
+                      key={i}
+                      journey={j}
+                      index={i}
+                      selected={i === selectedJourney}
+                      onSelect={() => setSelectedJourney(i)}
+                    />
+                  ))}
             </div>
           </section>
         </>
@@ -335,8 +574,14 @@ export function App() {
         <a href="https://github.com/planarnetwork/raptor" target="_blank" rel="noreferrer">
           raptor-journey-planner
         </a>
-        . Loading, pre-computation, planning and hydration all happen in a Web Worker.
+        . Loading, pre-computation, planning and hydration all happen in a Web Worker. Map tiles ©{' '}
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
+          OpenStreetMap
+        </a>{' '}
+        contributors.
       </footer>
+
+      {!workerReady && phase === 'idle' && <p className="empty">Booting worker…</p>}
     </div>
   );
 }
