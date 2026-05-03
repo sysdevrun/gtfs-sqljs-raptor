@@ -10,6 +10,9 @@
     "deploy": "npm run build && rsync -avz --delete --copy-links dist/ zorg.chtitux.org:/var/www/docs.sys-dev-run.fr/raptor/"
   },
   "dependencies": {
+    "@turf/helpers": "^7.3.5",
+    "@turf/line-slice": "^7.3.5",
+    "@turf/nearest-point-on-line": "^7.3.5",
     "comlink": "^4.4.1",
     "gtfs-sqljs": "^0.7.0",
     "gtfs-sqljs-raptor": "file:..",
