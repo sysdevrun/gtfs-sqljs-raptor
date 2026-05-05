@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as Comlink from 'comlink';
 import type { HydratedJourney } from 'gtfs-sqljs-raptor';
 import type {
+  HydratedCoordinateJourney,
   LoadResult,
   NamedStopGroup,
   PlannerProgress,
-  PoiHydratedJourney,
   WorkerApi,
 } from './worker/api';
 import { GtfsSelectorPanel } from './components/GtfsSelectorPanel';
@@ -13,13 +13,13 @@ import { StopAutocomplete } from './components/StopAutocomplete';
 import { SettingsPanel, type PlannerSettings } from './components/SettingsPanel';
 import { TimingsBar, type Timings } from './components/TimingsBar';
 import { JourneyCard } from './components/JourneyCard';
-import { PoiJourneyCard } from './components/PoiJourneyCard';
-import { MapView, type PickMode, type PoiPick } from './components/MapView';
+import { CoordinateJourneyCard } from './components/CoordinateJourneyCard';
+import { MapView, type CoordinatePick, type PickMode } from './components/MapView';
 import { ProgressBar } from './components/ProgressBar';
 import { getProxyUrl } from './util/proxy';
 import {
   geometryForJourney,
-  geometryForPoiJourney,
+  geometryForCoordinateJourney,
   type JourneyGeometry,
 } from './util/journeyGeometry';
 import {
@@ -40,7 +40,8 @@ const DEFAULT_SETTINGS: PlannerSettings = {
   rangeMinutes: 60,
 };
 
-type Mode = 'stops' | 'pois';
+type Mode = 'stops' | 'coords';
+
 
 export function App() {
   const workerRef = useRef<{ raw: Worker; api: Comlink.Remote<WorkerApi> } | null>(null);
@@ -58,9 +59,9 @@ export function App() {
   const [origin, setOrigin] = useState<NamedStopGroup | null>(null);
   const [destination, setDestination] = useState<NamedStopGroup | null>(null);
 
-  // POI-mode endpoints (lat/lon).
-  const [originPoi, setOriginPoi] = useState<PoiPick | null>(null);
-  const [destinationPoi, setDestinationPoi] = useState<PoiPick | null>(null);
+  // Coordinate-mode endpoints (lat/lon).
+  const [originCoord, setOriginCoord] = useState<CoordinatePick | null>(null);
+  const [destinationCoord, setDestinationCoord] = useState<CoordinatePick | null>(null);
   const [pickMode, setPickMode] = useState<PickMode>(null);
 
   const [date, setDate] = useState<string>(todayLocalISODate());
@@ -68,7 +69,7 @@ export function App() {
 
   // Results for both modes — one of these is populated at a time.
   const [stopJourneys, setStopJourneys] = useState<HydratedJourney[]>([]);
-  const [poiJourneys, setPoiJourneys] = useState<PoiHydratedJourney[]>([]);
+  const [coordJourneys, setCoordJourneys] = useState<HydratedCoordinateJourney[]>([]);
   const [shapesByTripId, setShapesByTripId] = useState<Record<string, [number, number][]>>({});
   const [selectedJourney, setSelectedJourney] = useState<number>(0);
 
@@ -131,13 +132,13 @@ export function App() {
     }
     setError(null);
     setStopJourneys([]);
-    setPoiJourneys([]);
+    setCoordJourneys([]);
     setShapesByTripId({});
     setTimings({});
     setOrigin(null);
     setDestination(null);
-    setOriginPoi(null);
-    setDestinationPoi(null);
+    setOriginCoord(null);
+    setDestinationCoord(null);
     setLoadResult(null);
     setProgress({ phase: 'load', percent: 0, message: 'Starting…' });
     setPhase('loading');
@@ -193,7 +194,7 @@ export function App() {
     setPhase('planning');
     setError(null);
     setStopJourneys([]);
-    setPoiJourneys([]);
+    setCoordJourneys([]);
     setShapesByTripId({});
     try {
       const result = await workerRef.current.api.plan({
@@ -222,17 +223,17 @@ export function App() {
     }
   };
 
-  const planPois = async () => {
-    if (!workerRef.current || !originPoi || !destinationPoi) return;
+  const planByCoords = async () => {
+    if (!workerRef.current || !originCoord || !destinationCoord) return;
     setPhase('planning');
     setError(null);
     setStopJourneys([]);
-    setPoiJourneys([]);
+    setCoordJourneys([]);
     setShapesByTripId({});
     try {
-      const result = await workerRef.current.api.planForPois({
-        origin: { id: '__poi_origin__', lat: originPoi.lat, lon: originPoi.lon },
-        destination: { id: '__poi_destination__', lat: destinationPoi.lat, lon: destinationPoi.lon },
+      const result = await workerRef.current.api.planByCoordinates({
+        origin: { id: '__coord_origin__', lat: originCoord.lat, lon: originCoord.lon },
+        destination: { id: '__coord_destination__', lat: destinationCoord.lat, lon: destinationCoord.lon },
         date,
         departAfterSeconds: timeSec,
       });
@@ -244,7 +245,7 @@ export function App() {
         hydrateMs: result.hydrateMs,
         rawCount: result.rawCount,
       }));
-      setPoiJourneys(result.journeys);
+      setCoordJourneys(result.journeys);
       setShapesByTripId(result.shapesByTripId);
       setSelectedJourney(0);
       setPhase('ready');
@@ -255,38 +256,38 @@ export function App() {
     }
   };
 
-  // Map-mode picking: clicking the map sets origin/destination POI based on
-  // pickMode. When the slot is filled, advance the picker so the user can pick
-  // the next slot without an extra click.
-  const onMapPick = (slot: 'origin' | 'destination', point: PoiPick) => {
+  // Map-mode picking: clicking the map sets the origin/destination coordinate
+  // based on pickMode. When the slot is filled, advance the picker so the user
+  // can pick the next slot without an extra click.
+  const onMapPick = (slot: 'origin' | 'destination', point: CoordinatePick) => {
     if (slot === 'origin') {
-      setOriginPoi(point);
-      if (!destinationPoi) setPickMode('destination');
+      setOriginCoord(point);
+      if (!destinationCoord) setPickMode('destination');
       else setPickMode(null);
     } else {
-      setDestinationPoi(point);
-      if (!originPoi) setPickMode('origin');
+      setDestinationCoord(point);
+      if (!originCoord) setPickMode('origin');
       else setPickMode(null);
     }
   };
 
   // Geometry for the currently-selected journey.
   const geometry: JourneyGeometry | null = useMemo(() => {
-    if (mode === 'pois' && poiJourneys[selectedJourney]) {
-      return geometryForPoiJourney(poiJourneys[selectedJourney], shapesByTripId);
+    if (mode === 'coords' && coordJourneys[selectedJourney]) {
+      return geometryForCoordinateJourney(coordJourneys[selectedJourney], shapesByTripId);
     }
     if (mode === 'stops' && stopJourneys[selectedJourney]) {
       return geometryForJourney(stopJourneys[selectedJourney], shapesByTripId);
     }
     return null;
-  }, [mode, poiJourneys, stopJourneys, selectedJourney, shapesByTripId]);
+  }, [mode, coordJourneys, stopJourneys, selectedJourney, shapesByTripId]);
 
   const initialBounds = loadResult?.feedBounds ?? null;
 
   const ready = phase === 'ready' || phase === 'planning' || phase === 'rebuilding';
   const planning = phase === 'planning';
   const canPlanStops = !!origin && !!destination;
-  const canPlanPois = !!originPoi && !!destinationPoi;
+  const canPlanByCoords = !!originCoord && !!destinationCoord;
 
   return (
     <div className="app">
@@ -363,9 +364,9 @@ export function App() {
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={mode === 'pois'}
-                  className={`mode-toggle__btn${mode === 'pois' ? ' mode-toggle__btn--active' : ''}`}
-                  onClick={() => setMode('pois')}
+                  aria-selected={mode === 'coords'}
+                  className={`mode-toggle__btn${mode === 'coords' ? ' mode-toggle__btn--active' : ''}`}
+                  onClick={() => setMode('coords')}
                 >
                   Pick on map
                 </button>
@@ -419,19 +420,19 @@ export function App() {
                 </button>
               </div>
             ) : (
-              <div className="poi-planner">
-                <div className="poi-planner__row">
+              <div className="coord-planner">
+                <div className="coord-planner__row">
                   <button
                     type="button"
-                    className={`poi-pick${pickMode === 'origin' ? ' poi-pick--active' : ''}${
-                      originPoi ? ' poi-pick--filled' : ''
+                    className={`coord-pick${pickMode === 'origin' ? ' coord-pick--active' : ''}${
+                      originCoord ? ' coord-pick--filled' : ''
                     }`}
                     onClick={() => setPickMode((m) => (m === 'origin' ? null : 'origin'))}
                   >
-                    <span className="poi-pick__label">A — Origin</span>
-                    <span className="poi-pick__value">
-                      {originPoi
-                        ? `${originPoi.lat.toFixed(5)}, ${originPoi.lon.toFixed(5)}`
+                    <span className="coord-pick__label">A — Origin</span>
+                    <span className="coord-pick__value">
+                      {originCoord
+                        ? `${originCoord.lat.toFixed(5)}, ${originCoord.lon.toFixed(5)}`
                         : pickMode === 'origin'
                           ? 'Click on the map…'
                           : 'Pick on map'}
@@ -439,15 +440,15 @@ export function App() {
                   </button>
                   <button
                     type="button"
-                    className={`poi-pick${pickMode === 'destination' ? ' poi-pick--active' : ''}${
-                      destinationPoi ? ' poi-pick--filled' : ''
+                    className={`coord-pick${pickMode === 'destination' ? ' coord-pick--active' : ''}${
+                      destinationCoord ? ' coord-pick--filled' : ''
                     }`}
                     onClick={() => setPickMode((m) => (m === 'destination' ? null : 'destination'))}
                   >
-                    <span className="poi-pick__label">B — Destination</span>
-                    <span className="poi-pick__value">
-                      {destinationPoi
-                        ? `${destinationPoi.lat.toFixed(5)}, ${destinationPoi.lon.toFixed(5)}`
+                    <span className="coord-pick__label">B — Destination</span>
+                    <span className="coord-pick__value">
+                      {destinationCoord
+                        ? `${destinationCoord.lat.toFixed(5)}, ${destinationCoord.lon.toFixed(5)}`
                         : pickMode === 'destination'
                           ? 'Click on the map…'
                           : 'Pick on map'}
@@ -455,20 +456,20 @@ export function App() {
                   </button>
                   <button
                     type="button"
-                    className="poi-pick poi-pick--clear"
+                    className="coord-pick coord-pick--clear"
                     onClick={() => {
-                      setOriginPoi(null);
-                      setDestinationPoi(null);
+                      setOriginCoord(null);
+                      setDestinationCoord(null);
                       setPickMode(null);
-                      setPoiJourneys([]);
+                      setCoordJourneys([]);
                       setShapesByTripId({});
                     }}
-                    disabled={!originPoi && !destinationPoi}
+                    disabled={!originCoord && !destinationCoord}
                   >
                     Clear
                   </button>
                 </div>
-                <div className="poi-planner__row">
+                <div className="coord-planner__row">
                   <label className="field">
                     <span className="field__label">Date</span>
                     <input
@@ -490,8 +491,8 @@ export function App() {
                   <button
                     className="planner-grid__submit"
                     type="button"
-                    disabled={!canPlanPois || planning}
-                    onClick={planPois}
+                    disabled={!canPlanByCoords || planning}
+                    onClick={planByCoords}
                   >
                     {planning ? 'Computing…' : 'Find itineraries'}
                   </button>
@@ -503,20 +504,20 @@ export function App() {
           <section className="panel panel--map">
             <header className="panel__header">
               <h2>Map</h2>
-              {mode === 'pois' && (
+              {mode === 'coords' && (
                 <span className="panel__hint">
                   {pickMode === 'origin'
-                    ? 'Click the map to set the origin POI'
+                    ? 'Click the map to set the origin coordinate'
                     : pickMode === 'destination'
-                      ? 'Click the map to set the destination POI'
+                      ? 'Click the map to set the destination coordinate'
                       : 'Use the A / B buttons above, then click the map'}
                 </span>
               )}
             </header>
             <MapView
-              origin={mode === 'pois' ? originPoi : null}
-              destination={mode === 'pois' ? destinationPoi : null}
-              pickMode={mode === 'pois' ? pickMode : null}
+              origin={mode === 'coords' ? originCoord : null}
+              destination={mode === 'coords' ? destinationCoord : null}
+              pickMode={mode === 'coords' ? pickMode : null}
               onPick={onMapPick}
               geometry={geometry}
               initialBounds={initialBounds}
@@ -529,16 +530,16 @@ export function App() {
             <header className="panel__header">
               <h2>
                 3. Results{' '}
-                {(mode === 'stops' ? stopJourneys.length : poiJourneys.length) > 0 && (
-                  <small>({mode === 'stops' ? stopJourneys.length : poiJourneys.length})</small>
+                {(mode === 'stops' ? stopJourneys.length : coordJourneys.length) > 0 && (
+                  <small>({mode === 'stops' ? stopJourneys.length : coordJourneys.length})</small>
                 )}
               </h2>
-              {(mode === 'stops' ? stopJourneys.length : poiJourneys.length) > 1 && (
+              {(mode === 'stops' ? stopJourneys.length : coordJourneys.length) > 1 && (
                 <span className="panel__hint">Click a result to highlight it on the map</span>
               )}
             </header>
             {((mode === 'stops' && stopJourneys.length === 0) ||
-              (mode === 'pois' && poiJourneys.length === 0)) &&
+              (mode === 'coords' && coordJourneys.length === 0)) &&
               phase !== 'planning' && <p className="empty">No journey computed yet.</p>}
             {phase === 'planning' && <p className="empty">Working…</p>}
             <div className="journeys">
@@ -552,8 +553,8 @@ export function App() {
                       <JourneyCard journey={j} index={i} />
                     </div>
                   ))
-                : poiJourneys.map((j, i) => (
-                    <PoiJourneyCard
+                : coordJourneys.map((j, i) => (
+                    <CoordinateJourneyCard
                       key={i}
                       journey={j}
                       index={i}

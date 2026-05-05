@@ -16,7 +16,7 @@ import {
   hydrateJourneys,
   findNearbyStops,
   loadStopLocations,
-  planForPois,
+  planByCoordinates,
   type BuildRaptorInputsOptions,
   type RaptorInputs,
   type StopLocation,
@@ -26,9 +26,9 @@ import type {
   LoadResult,
   PlanInput,
   PlanResult,
-  PoiPlanInput,
-  PoiPlanResult,
-  PoiHydratedJourney,
+  PlanByCoordinatesInput,
+  PlanByCoordinatesResult,
+  HydratedCoordinateJourney,
   NamedStopGroup,
   ProgressCallback,
 } from './api.js';
@@ -98,7 +98,7 @@ async function gatherFeedStats(): Promise<{
     : null;
   await tzStmt.free();
 
-  // Cache stop locations for POI lookups + compute bounding box at the same time.
+  // Cache stop locations for coordinate lookups + compute bounding box at the same time.
   stops = await loadStopLocations(gtfs);
   let bounds: LoadResult['feedBounds'] = null;
   if (stops.length > 0) {
@@ -294,7 +294,7 @@ const api: WorkerApi = {
     return { computeMs, hydrateMs, rawCount: raw.length, journeys, shapesByTripId };
   },
 
-  async planForPois(input: PoiPlanInput): Promise<PoiPlanResult> {
+  async planByCoordinates(input: PlanByCoordinatesInput): Promise<PlanByCoordinatesResult> {
     if (!gtfs || !inputs || !stops) throw new Error('GTFS not loaded');
     const {
       origin,
@@ -306,17 +306,17 @@ const api: WorkerApi = {
       maxNearbyStops = 12,
     } = input;
     if (origin.id === destination.id) {
-      throw new Error('origin and destination POIs share the same id');
+      throw new Error('origin and destination coordinates share the same id');
     }
 
     const findOpts = { radiusMeters, walkingSpeedMps, maxNearbyStops };
     const originNearby = findNearbyStops(origin, stops, findOpts);
     const destinationNearby = findNearbyStops(destination, stops, findOpts);
-    if (originNearby.length === 0) throw new Error('No transit stops near the origin POI');
-    if (destinationNearby.length === 0) throw new Error('No transit stops near the destination POI');
+    if (originNearby.length === 0) throw new Error('No transit stops near the origin coordinate');
+    if (destinationNearby.length === 0) throw new Error('No transit stops near the destination coordinate');
 
     const t0 = performance.now();
-    const raw = planForPois({
+    const raw = planByCoordinates({
       inputs,
       origin,
       destination,
@@ -328,14 +328,15 @@ const api: WorkerApi = {
     const computeMs = performance.now() - t0;
 
     const t1 = performance.now();
-    // Strip the POI walking legs and prepare the middle for hydration in one pass.
+    // Strip the synthetic walking legs at the journey's ends and prepare the
+    // middle for hydration in one pass.
     interface PreparedJourney {
       raw: RawJourney;
-      partial: Omit<PoiHydratedJourney, 'middleLegs'>;
+      partial: Omit<HydratedCoordinateJourney, 'middleLegs'>;
     }
     const prepared: PreparedJourney[] = [];
     for (const j of raw) {
-      const partial = stripPoiOuterLegs(j, origin, destination);
+      const partial = stripCoordinateOuterLegs(j, origin, destination);
       if (partial) prepared.push({ raw: j, partial });
     }
     const middleAsRawJourneys: RawJourney[] = prepared.map((p) => ({
@@ -345,7 +346,7 @@ const api: WorkerApi = {
     }));
     const hydratedMiddle = await hydrateJourneys(gtfs, middleAsRawJourneys);
 
-    const out: PoiHydratedJourney[] = prepared.map((p, i) => ({
+    const out: HydratedCoordinateJourney[] = prepared.map((p, i) => ({
       ...p.partial,
       middleLegs: hydratedMiddle[i]?.legs ?? [],
     }));
@@ -387,20 +388,21 @@ function isTransferLeg(leg: unknown): leg is RawTransferLeg {
 }
 
 /**
- * For a raw POI journey produced by planForPois, take the first and last legs
- * (which must be the POI walks) and turn them into structured info, returning a
- * partial PoiHydratedJourney without the hydrated middle.
+ * For a raw journey produced by planByCoordinates, take the first and last
+ * legs (which must be the synthetic endpoint walks) and turn them into
+ * structured info, returning a partial HydratedCoordinateJourney without the
+ * hydrated middle.
  */
-function stripPoiOuterLegs(
+function stripCoordinateOuterLegs(
   raw: RawJourney,
-  originPoi: PoiPlanInput['origin'],
-  destinationPoi: PoiPlanInput['destination'],
-): Omit<PoiHydratedJourney, 'middleLegs'> | null {
+  originCoord: PlanByCoordinatesInput['origin'],
+  destinationCoord: PlanByCoordinatesInput['destination'],
+): Omit<HydratedCoordinateJourney, 'middleLegs'> | null {
   if (raw.legs.length < 2) return null;
   const first = raw.legs[0];
   const last = raw.legs[raw.legs.length - 1];
   if (!isTransferLeg(first) || !isTransferLeg(last)) return null;
-  if (first.origin !== originPoi.id || last.destination !== destinationPoi.id) return null;
+  if (first.origin !== originCoord.id || last.destination !== destinationCoord.id) return null;
 
   const firstStopId = first.destination;
   const lastStopId = last.origin;
@@ -409,8 +411,8 @@ function stripPoiOuterLegs(
   return {
     departureTime: raw.departureTime,
     arrivalTime: raw.arrivalTime,
-    origin: { id: originPoi.id, lat: originPoi.lat, lon: originPoi.lon },
-    destination: { id: destinationPoi.id, lat: destinationPoi.lat, lon: destinationPoi.lon },
+    origin: { id: originCoord.id, lat: originCoord.lat, lon: originCoord.lon },
+    destination: { id: destinationCoord.id, lat: destinationCoord.lat, lon: destinationCoord.lon },
     originWalk: {
       duration: first.duration,
       toStopId: firstStopId,

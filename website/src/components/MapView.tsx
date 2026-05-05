@@ -3,14 +3,14 @@ import maplibregl, { type LngLatBoundsLike, type Map as MapLibreMap, type Marker
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { JourneyGeometry } from '../util/journeyGeometry';
 
-export type PoiPick = { lat: number; lon: number };
+export type CoordinatePick = { lat: number; lon: number };
 export type PickMode = 'origin' | 'destination' | null;
 
 interface Props {
-  origin: PoiPick | null;
-  destination: PoiPick | null;
+  origin: CoordinatePick | null;
+  destination: CoordinatePick | null;
   pickMode: PickMode;
-  onPick: (mode: 'origin' | 'destination', point: PoiPick) => void;
+  onPick: (mode: 'origin' | 'destination', point: CoordinatePick) => void;
   geometry: JourneyGeometry | null;
   /** Initial bounds applied once the map is loaded (typically the feed bbox). */
   initialBounds?: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
@@ -74,10 +74,10 @@ function boundsToBbox(b: { minLat: number; minLon: number; maxLat: number; maxLo
   ];
 }
 
-function makePoiEl(kind: 'origin' | 'destination'): HTMLElement {
+function makeEndpointEl(kind: 'origin' | 'destination'): HTMLElement {
   const el = document.createElement('div');
-  el.className = `map-poi map-poi--${kind}`;
-  el.setAttribute('aria-label', kind === 'origin' ? 'Origin POI' : 'Destination POI');
+  el.className = `map-endpoint map-endpoint--${kind}`;
+  el.setAttribute('aria-label', kind === 'origin' ? 'Origin coordinate' : 'Destination coordinate');
   el.textContent = kind === 'origin' ? 'A' : 'B';
   return el;
 }
@@ -188,7 +188,7 @@ export function MapView({ origin, destination, pickMode, onPick, geometry, initi
     if (!map) return;
     if (origin) {
       if (!originMarkerRef.current) {
-        originMarkerRef.current = new maplibregl.Marker({ element: makePoiEl('origin') })
+        originMarkerRef.current = new maplibregl.Marker({ element: makeEndpointEl('origin') })
           .setLngLat([origin.lon, origin.lat])
           .addTo(map);
       } else {
@@ -205,7 +205,7 @@ export function MapView({ origin, destination, pickMode, onPick, geometry, initi
     if (!map) return;
     if (destination) {
       if (!destinationMarkerRef.current) {
-        destinationMarkerRef.current = new maplibregl.Marker({ element: makePoiEl('destination') })
+        destinationMarkerRef.current = new maplibregl.Marker({ element: makeEndpointEl('destination') })
           .setLngLat([destination.lon, destination.lat])
           .addTo(map);
       } else {

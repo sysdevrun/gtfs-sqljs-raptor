@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Demo: plan an itinerary between two POIs over the Car Jaune fixture.
-// Run with `npm run build && node scripts/poi-demo.mjs`.
+// Demo: plan an itinerary between two arbitrary geographic coordinates over
+// the Car Jaune fixture.
+// Run with `npm run build && node scripts/coordinate-demo.mjs`.
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -11,7 +12,7 @@ import {
   findNearbyStops,
   hydrateJourneys,
   loadStopLocations,
-  planForPois,
+  planByCoordinates,
 } from '../dist/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,7 +38,7 @@ console.log(`Nearby to Hôtel de Ville Saint-Denis (${destinationNearby.length})
 for (const n of destinationNearby.slice(0, 5)) console.log(`  ${n.stopId}  walk ${n.walkSeconds}s`);
 
 const t0 = Date.now();
-const journeys = planForPois({
+const journeys = planByCoordinates({
   inputs,
   origin: HDV_ST_LOUIS,
   destination: HDV_ST_DENIS,
@@ -48,7 +49,7 @@ const journeys = planForPois({
 });
 const planMs = Date.now() - t0;
 
-console.log(`\nplanForPois: ${journeys.length} journeys in ${planMs} ms`);
+console.log(`\nplanByCoordinates: ${journeys.length} journeys in ${planMs} ms`);
 
 if (journeys.length === 0) {
   console.log('No journey found.');

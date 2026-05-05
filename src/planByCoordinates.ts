@@ -13,7 +13,14 @@ import {
 import type { RaptorInputs } from './buildRaptorInputs.js';
 import { iterateRows } from './internal/sqlHelpers.js';
 
-export interface Poi {
+/**
+ * A geographic endpoint of a query: an arbitrary `{ lat, lon }` plus an `id`.
+ * The `id` is an internal handle used to register the coordinate as a phantom
+ * stop in the per-query raptor index, and to identify the synthetic walking
+ * legs in the returned `Journey`. It must not collide with any real GTFS
+ * `stop_id` and must differ between origin and destination.
+ */
+export interface Coordinate {
   id: string;
   lat: number;
   lon: number;
@@ -39,10 +46,10 @@ export interface FindNearbyStopsOptions {
   maxNearbyStops?: number;
 }
 
-export interface PlanForPoisParams {
+export interface PlanByCoordinatesParams {
   inputs: RaptorInputs;
-  origin: Poi;
-  destination: Poi;
+  origin: Coordinate;
+  destination: Coordinate;
   /**
    * Pre-resolved nearby real stops with walk durations from `origin` to each.
    * Use `findNearbyStops(origin, stops)` if you don't have a spatial index.
@@ -50,15 +57,15 @@ export interface PlanForPoisParams {
   originNearby: NearbyStop[];
   /**
    * Pre-resolved nearby real stops with walk durations from each to `destination`.
-   * The walk goes stop → POI; durations are symmetric so the same number applies.
+   * Walks are symmetric so the same duration applies in either direction.
    */
   destinationNearby: NearbyStop[];
   /** Search date. A fresh `Date` is passed to the query so the caller's value is not mutated. */
   date: Date;
   /** Seconds since midnight (e.g. `9 * 3600` for 09:00). */
   departAfterSeconds: number;
-  /** Interchange seconds applied to both POIs. Default: 0. */
-  poiInterchangeSeconds?: number;
+  /** Interchange seconds applied to both endpoints. Default: 0. */
+  endpointInterchangeSeconds?: number;
 }
 
 const ALWAYS_ON_SERVICE = new Service(
@@ -68,17 +75,18 @@ const ALWAYS_ON_SERVICE = new Service(
   {},
 );
 
-const PHANTOM_SERVICE_ID = '__poi_always';
+const PHANTOM_SERVICE_ID = '__coord_always';
 
 /**
- * Plan an itinerary between two POIs that are not GTFS stops, taking walking
- * legs from the POIs to nearby real stops into account. Per query, the function
- * appends two phantom trips (one per POI, with `pickUp: false / dropOff: false`
- * so the algorithm never tries to board them) plus walking edges, then calls
- * `RaptorAlgorithmFactory.create` and runs a `DepartAfterQuery`. The base
- * `inputs` (trips / transfers / interchange) are not mutated.
+ * Plan an itinerary between two arbitrary geographic coordinates that are not
+ * GTFS stops, taking walking legs from each coordinate to nearby real stops
+ * into account. Per query, the function appends two phantom trips (one per
+ * endpoint, with `pickUp: false / dropOff: false` so the algorithm never tries
+ * to board them) plus walking edges, then calls `RaptorAlgorithmFactory.create`
+ * and runs a `DepartAfterQuery`. The base `inputs` (trips / transfers /
+ * interchange) are not mutated.
  */
-export function planForPois(params: PlanForPoisParams): Journey[] {
+export function planByCoordinates(params: PlanByCoordinatesParams): Journey[] {
   const {
     inputs,
     origin,
@@ -87,11 +95,11 @@ export function planForPois(params: PlanForPoisParams): Journey[] {
     destinationNearby,
     date,
     departAfterSeconds,
-    poiInterchangeSeconds = 0,
+    endpointInterchangeSeconds = 0,
   } = params;
 
   if (origin.id === destination.id) {
-    throw new Error('planForPois: origin.id and destination.id must differ');
+    throw new Error('planByCoordinates: origin.id and destination.id must differ');
   }
 
   const trips: Trip[] = inputs.trips.concat(
@@ -109,9 +117,9 @@ export function planForPois(params: PlanForPoisParams): Journey[] {
     );
   }
 
-  const interchange = withPoiInterchange(inputs.interchange, {
-    [origin.id]: poiInterchangeSeconds,
-    [destination.id]: poiInterchangeSeconds,
+  const interchange = withEndpointInterchange(inputs.interchange, {
+    [origin.id]: endpointInterchangeSeconds,
+    [destination.id]: endpointInterchangeSeconds,
   });
 
   const raptor = RaptorAlgorithmFactory.create(trips, transfers, interchange);
@@ -125,7 +133,7 @@ export function planForPois(params: PlanForPoisParams): Journey[] {
  * build the `NearbyStop[]` array yourself.
  */
 export function findNearbyStops(
-  poi: Poi,
+  point: Coordinate | { lat: number; lon: number },
   stops: StopLocation[],
   options: FindNearbyStopsOptions = {},
 ): NearbyStop[] {
@@ -133,7 +141,7 @@ export function findNearbyStops(
   const within: { stopId: string; meters: number }[] = [];
   for (const s of stops) {
     if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
-    const meters = haversineMeters(poi.lat, poi.lon, s.lat, s.lon);
+    const meters = haversineMeters(point.lat, point.lon, s.lat, s.lon);
     if (meters <= radiusMeters) within.push({ stopId: s.id, meters });
   }
   within.sort((a, b) => a.meters - b.meters);
@@ -143,14 +151,14 @@ export function findNearbyStops(
   }));
 }
 
-function phantomTripFor(poiId: string): Trip {
+function phantomTripFor(coordId: string): Trip {
   return {
-    tripId: `__poi_${poiId}`,
+    tripId: `__coord_${coordId}`,
     serviceId: PHANTOM_SERVICE_ID,
     service: ALWAYS_ON_SERVICE,
     stopTimes: [
       {
-        stop: poiId,
+        stop: coordId,
         arrivalTime: 0,
         departureTime: 0,
         pickUp: false,
@@ -171,12 +179,12 @@ function walkEdge(origin: string, destination: string, duration: number): Transf
 }
 
 /**
- * Add per-query POI overrides on top of the base interchange, while preserving
+ * Add per-query endpoint overrides on top of the base interchange while preserving
  * the base Proxy's default-fallback for any other stop. `RaptorAlgorithmFactory.create`
  * default-fills missing entries by writing `0` into the interchange — those writes
  * land on the per-query overrides object, never on the underlying base map.
  */
-function withPoiInterchange(
+function withEndpointInterchange(
   base: Interchange,
   overrides: Record<string, number>,
 ): Interchange {

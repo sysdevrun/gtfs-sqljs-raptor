@@ -29,7 +29,7 @@ export interface PlanInput {
   rangeSeconds?: number;
 }
 
-export interface PoiPlanInput {
+export interface PlanByCoordinatesInput {
   origin: { id: string; lat: number; lon: number };
   destination: { id: string; lat: number; lon: number };
   date: string;
@@ -42,16 +42,16 @@ export interface PoiPlanInput {
   maxNearbyStops?: number;
 }
 
-export interface PoiHydratedJourney {
+export interface HydratedCoordinateJourney {
   departureTime: number;
   arrivalTime: number;
   origin: { id: string; lat: number; lon: number };
   destination: { id: string; lat: number; lon: number };
-  /** Walk from the origin POI to the first transit stop. */
+  /** Walk from the origin coordinate to the first transit stop. */
   originWalk: { duration: number; toStopId: string; toStopLat: number; toStopLon: number };
-  /** Walk from the last transit stop to the destination POI. */
+  /** Walk from the last transit stop to the destination coordinate. */
   destinationWalk: { duration: number; fromStopId: string; fromStopLat: number; fromStopLon: number };
-  /** All non-POI legs (timetable + intra-feed transfer walks). */
+  /** All non-endpoint legs (timetable + intra-feed transfer walks). */
   middleLegs: HydratedJourney['legs'];
 }
 
@@ -64,11 +64,11 @@ export interface PlanResult {
   shapesByTripId: Record<string, [number, number][]>;
 }
 
-export interface PoiPlanResult {
+export interface PlanByCoordinatesResult {
   computeMs: number;
   hydrateMs: number;
   rawCount: number;
-  journeys: PoiHydratedJourney[];
+  journeys: HydratedCoordinateJourney[];
   shapesByTripId: Record<string, [number, number][]>;
 }
 
@@ -116,6 +116,6 @@ export interface WorkerApi {
   ): Promise<{ inputsMs: number; indexMs: number }>;
   searchStopGroups(query: string, limit?: number): Promise<NamedStopGroup[]>;
   plan(input: PlanInput): Promise<PlanResult>;
-  planForPois(input: PoiPlanInput): Promise<PoiPlanResult>;
+  planByCoordinates(input: PlanByCoordinatesInput): Promise<PlanByCoordinatesResult>;
   close(): Promise<void>;
 }
