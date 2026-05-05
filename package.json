@@ -1,6 +1,6 @@
 {
   "name": "gtfs-sqljs-raptor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bridge a gtfs-sqljs instance to raptor-journey-planner: build raptor inputs from SQLite-backed GTFS and hydrate the resulting Journey[] with stop and route metadata. Works in browser and Node.",
   "type": "module",
   "main": "./dist/index.js",
